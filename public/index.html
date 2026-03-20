@@ -160,46 +160,92 @@
   </section>
 
   <section class="panel betting-panel" aria-labelledby="markets-heading">
-    <div class="panel-header">
-      <div class="panel-title-group">
-        <h2 class="panel-title" id="markets-heading">Bet on who ends richest</h2>
-        <p class="panel-lede">Pick an agent outcome · trade YES/NO with USDC on Base (not the same as agent credits).</p>
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <h2 class="panel-title" id="markets-heading">Bet on who ends richest</h2>
+          <p class="panel-lede">Pick a market, then Buy or Sell Yes/No on an agent — USDC on Base (not agent credits).</p>
+        </div>
+        <span class="panel-badge" id="wallet-badge">Wallet disconnected</span>
       </div>
-      <span class="panel-badge" id="wallet-badge">Wallet disconnected</span>
-    </div>
     <div class="market-meta" id="market-meta" aria-live="polite"></div>
     <div class="countdown-row" id="countdown-row" hidden>
       <span class="countdown-label">Betting closes in</span>
       <span class="countdown-value" id="countdown-value">—</span>
     </div>
-    <div class="betting-controls">
-      <button type="button" class="btn btn-start" id="btn-connect-wallet" onclick="connectWallet()">Connect wallet</button>
-      <select id="market-select" aria-label="Betting market"></select>
-      <select id="outcome-select" aria-label="Agent to bet on"></select>
-      <select id="side-select" aria-label="Side">
-        <option value="BUY_YES">BUY_YES</option>
-        <option value="BUY_NO">BUY_NO</option>
-        <option value="SELL_YES">SELL_YES</option>
-        <option value="SELL_NO">SELL_NO</option>
-      </select>
-      <input id="usdc-amount" type="number" min="0.01" step="0.01" placeholder="USDC" inputmode="decimal" />
-      <button type="button" class="btn btn-stop" id="btn-quote" onclick="previewTrade()">Quote</button>
-      <button type="button" class="btn btn-start" id="btn-trade" onclick="placeTrade()">Trade on-chain</button>
-      <button type="button" class="btn btn-stop" onclick="loadPositions()">Refresh positions</button>
-    </div>
-    <div class="betting-grid">
-      <div class="betting-card">
-        <h3>Quote</h3>
-        <p class="quote-hint">Preview costs before you bet on-chain — gross USDC, fee, net to pool.</p>
-        <pre id="quote-output">No quote yet</pre>
+
+    <div class="pm-card" id="pm-card">
+      <div class="pm-card-top">
+        <div class="pm-brand">
+          <div class="pm-icon" aria-hidden="true">
+            <span class="pm-icon-tri"></span>
+          </div>
+          <div class="pm-headlines">
+            <div class="pm-market-line" id="pm-market-line">Select a market</div>
+            <div class="pm-close-line" id="pm-close-line">—</div>
+          </div>
+        </div>
+        <button type="button" class="pm-connect" id="btn-connect-wallet" onclick="connectWallet()">Connect</button>
       </div>
+
+      <label class="pm-field-label" for="market-select">Market</label>
+      <select id="market-select" class="pm-select pm-select-full" aria-label="Betting market"></select>
+
+      <div class="pm-tabs-row">
+        <div class="pm-tabs" role="tablist">
+          <button type="button" class="pm-tab pm-tab-active" id="tab-buy" data-mode="buy" role="tab" aria-selected="true">Buy</button>
+          <button type="button" class="pm-tab" id="tab-sell" data-mode="sell" role="tab" aria-selected="false">Sell</button>
+        </div>
+        <select id="order-type-select" class="pm-order-select" aria-label="Order type" title="Order type">
+          <option value="market">Market</option>
+        </select>
+      </div>
+
+      <label class="pm-field-label" for="outcome-select">Agent outcome</label>
+      <select id="outcome-select" class="pm-select pm-select-full" aria-label="Agent to bet on"></select>
+
+      <div class="pm-yesno" role="group" aria-label="Yes or No">
+        <button type="button" class="pm-yesno-btn pm-yesno-yes pm-yesno-active" id="btn-yes" data-yesno="yes">
+          <span class="pm-yesno-label">Yes</span>
+          <span class="pm-yesno-price" id="price-yes">—</span>
+        </button>
+        <button type="button" class="pm-yesno-btn pm-yesno-no" id="btn-no" data-yesno="no">
+          <span class="pm-yesno-label">No</span>
+          <span class="pm-yesno-price" id="price-no">—</span>
+        </button>
+      </div>
+
+      <div class="pm-amount-block">
+        <div class="pm-amount-row">
+          <span class="pm-amount-label">Amount</span>
+          <div class="pm-amount-input-wrap">
+            <span class="pm-dollar" aria-hidden="true">$</span>
+            <input id="usdc-amount" type="number" min="0.01" step="0.01" placeholder="0" class="pm-amount-input" inputmode="decimal" />
+          </div>
+        </div>
+        <div class="pm-quick-row">
+          <button type="button" class="pm-chip" data-add="1">+$1</button>
+          <button type="button" class="pm-chip" data-add="5">+$5</button>
+          <button type="button" class="pm-chip" data-add="10">+$10</button>
+          <button type="button" class="pm-chip" data-add="100">+$100</button>
+          <button type="button" class="pm-chip" id="amt-50">50%</button>
+          <button type="button" class="pm-chip" id="amt-max">Max</button>
+        </div>
+        <div class="pm-quote-line" id="quote-preview">Enter a USDC amount for an estimate.</div>
+      </div>
+
+      <button type="button" class="pm-trade-btn" id="btn-trade">Trade</button>
+      <p class="pm-terms">By trading, you agree to the <a href="#" onclick="return false">Terms of Use</a>.</p>
+      <button type="button" class="pm-refresh-pos" onclick="loadPositions()">Refresh positions</button>
+    </div>
+
+    <div class="betting-grid">
       <div class="betting-card">
         <h3>Protocol fees (30d)</h3>
         <pre id="fees-output">Loading…</pre>
       </div>
       <div class="betting-card betting-card-wide">
         <h3>Your positions</h3>
-        <p class="positions-hint">Est. value uses pool mid price (display only). Resolution uses <strong>richest agent in the economy</strong> (tick snapshot), not this mark. Exit before the deadline with SELL_YES / SELL_NO.</p>
+        <p class="positions-hint">Est. value uses pool mid price (display only). Resolution uses <strong>richest agent in the economy</strong> (tick snapshot), not this mark. Exit before the deadline: <strong>Sell</strong> + Yes or No.</p>
         <div class="positions-table-wrap" id="positions-wrap">
           <table class="positions-table" id="positions-table" aria-label="Open positions">
             <thead>

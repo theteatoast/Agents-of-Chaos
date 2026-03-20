@@ -7,9 +7,15 @@ let actionChart = null;
 let connectedWallet = null;
 let marketOutcomes = [];
 let cachedMarkets = [];
+let cachedPositions = [];
 let marketConfig = null;
 let tradeLocked = false;
 let quoteLocked = false;
+/** @type {'buy'|'sell'} */
+let betMode = 'buy';
+/** @type {'yes'|'no'} */
+let betYesNo = 'yes';
+let quoteDebounce = null;
 function getEthers() {
   if (typeof ethers !== 'undefined') return ethers;
   if (typeof window !== 'undefined' && window.ethers) return window.ethers;
@@ -390,6 +396,93 @@ function formatDuration(ms) {
   return parts.join(' ');
 }
 
+function updatePmMarketHeader() {
+  const line = document.getElementById('pm-market-line');
+  const closeLine = document.getElementById('pm-close-line');
+  if (!line || !closeLine) return;
+  const select = document.getElementById('market-select');
+  const id = Number(select?.value);
+  const m = cachedMarkets.find((x) => x.id === id);
+  if (!m) {
+    line.textContent = 'Select a market';
+    closeLine.textContent = '—';
+    return;
+  }
+  line.textContent = (m.title || `Market #${m.id}`).slice(0, 72);
+  const closes = m.betting_closes_at ? new Date(m.betting_closes_at) : null;
+  closeLine.textContent = closes
+    ? `Closes ${closes.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · ${closes.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : 'No deadline set';
+}
+
+function getSelectedOutcome() {
+  const outcomeId = Number(document.getElementById('outcome-select')?.value);
+  return marketOutcomes.find((o) => o.id === outcomeId);
+}
+
+function updateYesNoPrices() {
+  const o = getSelectedOutcome();
+  const yesEl = document.getElementById('price-yes');
+  const noEl = document.getElementById('price-no');
+  if (!yesEl || !noEl) return;
+  if (!o) {
+    yesEl.textContent = '—';
+    noEl.textContent = '—';
+    return;
+  }
+  const y = Number(o.implied_yes ?? 0.5);
+  const n = Number(o.implied_no ?? 1 - y);
+  yesEl.textContent = `${(y * 100).toFixed(1)}¢`;
+  noEl.textContent = `${(n * 100).toFixed(1)}¢`;
+}
+
+function setBetMode(mode) {
+  betMode = mode;
+  document.getElementById('tab-buy')?.classList.toggle('pm-tab-active', mode === 'buy');
+  document.getElementById('tab-sell')?.classList.toggle('pm-tab-active', mode === 'sell');
+  document.getElementById('tab-buy')?.setAttribute('aria-selected', mode === 'buy');
+  document.getElementById('tab-sell')?.setAttribute('aria-selected', mode === 'sell');
+}
+
+function setYesNo(yn) {
+  betYesNo = yn;
+  document.getElementById('btn-yes')?.classList.toggle('pm-yesno-active', yn === 'yes');
+  document.getElementById('btn-no')?.classList.toggle('pm-yesno-active', yn === 'no');
+}
+
+function getSideKey() {
+  const buy = betMode === 'buy';
+  const yes = betYesNo === 'yes';
+  if (buy && yes) return 'BUY_YES';
+  if (buy && !yes) return 'BUY_NO';
+  if (!buy && yes) return 'SELL_YES';
+  return 'SELL_NO';
+}
+
+function getPositionForOutcome() {
+  const marketId = Number(document.getElementById('market-select')?.value);
+  const outcomeId = Number(document.getElementById('outcome-select')?.value);
+  return cachedPositions.find((p) => Number(p.market_id) === marketId && Number(p.outcome_id) === outcomeId);
+}
+
+function scheduleQuotePreview() {
+  if (quoteDebounce) clearTimeout(quoteDebounce);
+  quoteDebounce = setTimeout(() => previewTrade(), 450);
+}
+
+function formatQuotePreview(q) {
+  if (!q) return '';
+  const isBuy = String(q.side || '').startsWith('BUY');
+  if (isBuy) {
+    const sh = Math.abs(Number(q.sharesDelta ?? 0));
+    const fee = Number(q.feeUsdc ?? q.fee_on_gross_usdc ?? 0);
+    const net = Number(q.netUsdc ?? q.net_to_pool_usdc ?? 0);
+    return `~${sh.toFixed(4)} shares · fee ${fee.toFixed(4)} USDC · ${net.toFixed(4)} USDC to pool`;
+  }
+  const u = Number(q.usdc_to_user ?? 0);
+  return `~${u.toFixed(4)} USDC to you (after fees)`;
+}
+
 function updateMarketMetaAndCountdown() {
   const select = document.getElementById('market-select');
   const meta = document.getElementById('market-meta');
@@ -398,6 +491,7 @@ function updateMarketMetaAndCountdown() {
   if (!select || !meta || !row || !val) return;
   const id = Number(select.value);
   const m = cachedMarkets.find((x) => x.id === id);
+  updatePmMarketHeader();
   if (!m) {
     meta.textContent = '';
     row.hidden = true;
@@ -445,6 +539,7 @@ async function loadMarkets() {
     await loadOutcomes(id);
   }
   updateMarketMetaAndCountdown();
+  updatePmMarketHeader();
   const feeRes = await api('/markets/fees/daily');
   document.getElementById('fees-output').textContent = JSON.stringify(feeRes.fees || [], null, 2);
 }
@@ -454,6 +549,8 @@ async function loadOutcomes(marketId) {
   marketOutcomes = res.outcomes || [];
   const select = document.getElementById('outcome-select');
   select.innerHTML = marketOutcomes.map((o) => `<option value="${o.id}">${o.agent_name}</option>`).join('');
+  updateYesNoPrices();
+  scheduleQuotePreview();
 }
 
 async function connectWallet() {
@@ -461,6 +558,7 @@ async function connectWallet() {
     alert('No EVM wallet detected');
     return;
   }
+  await loadMarketConfig();
   const [addr] = await window.ethereum.request({ method: 'eth_requestAccounts' });
   const challengeRes = await api('/wallet/challenge', {
     method: 'POST',
@@ -477,42 +575,118 @@ async function connectWallet() {
     body: JSON.stringify({ walletAddress: addr, signature }),
   });
   connectedWallet = addr.toLowerCase();
-  document.getElementById('wallet-badge').textContent = `${connectedWallet.slice(0, 6)}…${connectedWallet.slice(-4)}`;
+  const short = `${connectedWallet.slice(0, 6)}…${connectedWallet.slice(-4)}`;
+  document.getElementById('wallet-badge').textContent = short;
+  const connectBtn = document.getElementById('btn-connect-wallet');
+  if (connectBtn) connectBtn.textContent = short;
   await loadPositions();
 }
 
 async function previewTrade() {
   if (quoteLocked) return;
+  const previewEl = document.getElementById('quote-preview');
+  const usdcAmount = Number(document.getElementById('usdc-amount')?.value);
+  if (!Number.isFinite(usdcAmount) || usdcAmount <= 0) {
+    if (previewEl) previewEl.textContent = 'Enter a USDC amount for an estimate.';
+    return;
+  }
   quoteLocked = true;
-  const btn = document.getElementById('btn-quote');
-  if (btn) btn.disabled = true;
   try {
     const marketId = Number(document.getElementById('market-select').value);
     const outcomeId = Number(document.getElementById('outcome-select').value);
-    const side = document.getElementById('side-select').value;
-    const usdcAmount = Number(document.getElementById('usdc-amount').value);
+    const side = getSideKey();
     const quoteRes = await api('/markets/quote', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ marketId, outcomeId, side, usdcAmount }),
     });
     if (quoteRes.error) {
-      document.getElementById('quote-output').textContent = quoteRes.error;
+      if (previewEl) previewEl.textContent = quoteRes.error;
       return;
     }
-    document.getElementById('quote-output').textContent = JSON.stringify(quoteRes.quote || quoteRes, null, 2);
+    const q = quoteRes.quote || quoteRes;
+    if (previewEl) previewEl.textContent = formatQuotePreview(q);
   } catch (e) {
-    document.getElementById('quote-output').textContent = String(e.message || e);
+    if (previewEl) previewEl.textContent = String(e.message || e);
   } finally {
     quoteLocked = false;
-    if (btn) btn.disabled = false;
   }
 }
 
 const ERC20_MIN_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address owner) view returns (uint256)',
 ];
+
+async function getUsdcBalance() {
+  if (!connectedWallet || !window.ethereum) return 0;
+  if (!marketConfig?.usdc_contract) await loadMarketConfig();
+  if (!marketConfig?.usdc_contract) return 0;
+  try {
+    const eth = getEthers();
+    const provider = new eth.BrowserProvider(window.ethereum);
+    const usdc = new eth.Contract(marketConfig.usdc_contract, ERC20_MIN_ABI, provider);
+    const raw = await usdc.balanceOf(connectedWallet);
+    return Number(eth.formatUnits(raw, 6));
+  } catch {
+    return 0;
+  }
+}
+
+function applyQuickAdd(delta) {
+  const input = document.getElementById('usdc-amount');
+  if (!input) return;
+  const cur = parseFloat(input.value) || 0;
+  input.value = (cur + delta).toFixed(2);
+  scheduleQuotePreview();
+}
+
+async function applyAmount50() {
+  const input = document.getElementById('usdc-amount');
+  const previewEl = document.getElementById('quote-preview');
+  if (!input) return;
+  if (betMode === 'buy') {
+    const bal = await getUsdcBalance();
+    if (bal <= 0) {
+      if (previewEl) previewEl.textContent = 'Connect wallet and fund USDC on Base.';
+      return;
+    }
+    input.value = (bal * 0.5).toFixed(2);
+  } else {
+    const pos = getPositionForOutcome();
+    const shares = pos ? Number(pos.shares) : 0;
+    if (shares <= 0) {
+      if (previewEl) previewEl.textContent = 'No position to sell for this agent outcome.';
+      return;
+    }
+    input.value = (shares * 0.5).toFixed(6);
+  }
+  scheduleQuotePreview();
+}
+
+async function applyAmountMax() {
+  const input = document.getElementById('usdc-amount');
+  const previewEl = document.getElementById('quote-preview');
+  if (!input) return;
+  if (betMode === 'buy') {
+    const bal = await getUsdcBalance();
+    if (bal <= 0) {
+      if (previewEl) previewEl.textContent = 'Connect wallet and fund USDC on Base.';
+      return;
+    }
+    input.value = Math.max(0.01, bal - 0.000001).toFixed(6);
+  } else {
+    const pos = getPositionForOutcome();
+    const shares = pos ? Number(pos.shares) : 0;
+    if (shares <= 0) {
+      if (previewEl) previewEl.textContent = 'No position to sell for this agent outcome.';
+      return;
+    }
+    input.value = Math.max(0.01, shares).toFixed(6);
+  }
+  scheduleQuotePreview();
+}
 
 const SIDE_MAP = { BUY_YES: 0, BUY_NO: 1, SELL_YES: 2, SELL_NO: 3 };
 
@@ -529,8 +703,12 @@ async function placeTrade() {
 
   const marketId = Number(document.getElementById('market-select').value);
   const outcomeId = Number(document.getElementById('outcome-select').value);
-  const sideKey = document.getElementById('side-select').value;
+  const sideKey = getSideKey();
   const usdcAmount = Number(document.getElementById('usdc-amount').value);
+  if (!Number.isFinite(usdcAmount) || usdcAmount <= 0) {
+    alert('Enter a valid USDC amount.');
+    return;
+  }
 
   const m = cachedMarkets.find((x) => x.id === marketId);
   if (!m || m.status !== 'OPEN' || !m.trading_open) {
@@ -539,7 +717,7 @@ async function placeTrade() {
   }
 
   const outcome = marketOutcomes.find((o) => o.id === outcomeId);
-  if (!outcome || outcome.outcome_index === undefined) {
+  if (!outcome || outcome.outcome_index == null) {
     alert('Outcome not loaded — refresh and try again.');
     return;
   }
@@ -552,9 +730,7 @@ async function placeTrade() {
 
   tradeLocked = true;
   const btnTrade = document.getElementById('btn-trade');
-  const btnQuote = document.getElementById('btn-quote');
   if (btnTrade) btnTrade.disabled = true;
-  if (btnQuote) btnQuote.disabled = true;
 
   try {
     const eth = getEthers();
@@ -596,19 +772,20 @@ async function placeTrade() {
     const usdc = new eth.Contract(cfg.usdc_contract, ERC20_MIN_ABI, signer);
     const market = new eth.Contract(cfg.prediction_market_contract, marketAbi, signer);
 
+    const quoteEl = document.getElementById('quote-preview');
     if (side < 2) {
       const cur = await usdc.allowance(user, cfg.prediction_market_contract);
       if (cur < gross) {
-        document.getElementById('quote-output').textContent = 'Approving USDC spend…';
+        if (quoteEl) quoteEl.textContent = 'Approving USDC spend…';
         const ap = await usdc.approve(cfg.prediction_market_contract, eth.MaxUint256);
         await ap.wait();
       }
     }
 
-    document.getElementById('quote-output').textContent = 'Confirm the trade in your wallet…';
+    if (quoteEl) quoteEl.textContent = 'Confirm the trade in your wallet…';
     const tx = await market.trade(marketId, outcome.outcome_index, side, gross, minOut);
-    document.getElementById('quote-output').textContent = 'Waiting for confirmation…\n' + tx.hash;
-    const receipt = await tx.wait();
+    if (quoteEl) quoteEl.textContent = 'Waiting for confirmation… ' + tx.hash;
+  const receipt = await tx.wait();
     if (receipt.status !== 1) throw new Error('Transaction reverted');
 
     const confirm = await api('/markets/trade/confirm', {
@@ -618,17 +795,17 @@ async function placeTrade() {
     });
     if (confirm.error) throw new Error(confirm.error);
 
-    document.getElementById('quote-output').textContent = JSON.stringify({ receipt: receipt.hash, indexed: confirm }, null, 2);
+    if (quoteEl) quoteEl.textContent = `Confirmed · indexed · ${receipt.hash.slice(0, 10)}…`;
     await loadPositions();
     await loadMarkets();
   } catch (e) {
     console.error(e);
-    document.getElementById('quote-output').textContent = 'Error: ' + (e.message || e);
+    const quoteEl = document.getElementById('quote-preview');
+    if (quoteEl) quoteEl.textContent = 'Error: ' + (e.message || e);
     alert(e.message || e);
   } finally {
     tradeLocked = false;
     if (btnTrade) btnTrade.disabled = false;
-    if (btnQuote) btnQuote.disabled = false;
   }
 }
 
@@ -659,11 +836,13 @@ function renderPositionsTable(positions) {
 async function loadPositions() {
   const tbody = document.getElementById('positions-tbody');
   if (!connectedWallet) {
+    cachedPositions = [];
     if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">Connect wallet to view positions</td></tr>';
     return;
   }
   const positionsRes = await api(`/positions/${connectedWallet}`);
-  renderPositionsTable(positionsRes.positions || []);
+  cachedPositions = positionsRes.positions || [];
+  renderPositionsTable(cachedPositions);
 }
 
 // === Boot ===
@@ -679,6 +858,37 @@ document.getElementById('market-select')?.addEventListener('change', (e) => {
   loadOutcomes(Number(e.target.value));
   updateMarketMetaAndCountdown();
 });
+
+document.getElementById('outcome-select')?.addEventListener('change', () => {
+  updateYesNoPrices();
+  scheduleQuotePreview();
+});
+
+document.getElementById('tab-buy')?.addEventListener('click', () => {
+  setBetMode('buy');
+  scheduleQuotePreview();
+});
+document.getElementById('tab-sell')?.addEventListener('click', () => {
+  setBetMode('sell');
+  scheduleQuotePreview();
+});
+document.getElementById('btn-yes')?.addEventListener('click', () => {
+  setYesNo('yes');
+  scheduleQuotePreview();
+});
+document.getElementById('btn-no')?.addEventListener('click', () => {
+  setYesNo('no');
+  scheduleQuotePreview();
+});
+document.querySelectorAll('.pm-chip[data-add]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const d = parseFloat(btn.getAttribute('data-add'));
+    if (Number.isFinite(d)) applyQuickAdd(d);
+  });
+});
+document.getElementById('amt-50')?.addEventListener('click', () => applyAmount50());
+document.getElementById('amt-max')?.addEventListener('click', () => applyAmountMax());
+document.getElementById('usdc-amount')?.addEventListener('input', () => scheduleQuotePreview());
 
 window.connectWallet = connectWallet;
 window.previewTrade = previewTrade;
