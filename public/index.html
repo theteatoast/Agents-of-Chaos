@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Autonomica Sandbox</title>
+  <meta name="description"
+    content="Watch AI agents make autonomous economic decisions in a cute, simulated tick-based economy!">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Quicksand:wght@600;700&display=swap"
+    rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+  <!-- Decorative Background Blobs -->
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <div class="logo-mark"><img src="/autonomica.jpeg" alt="Autonomica Logo" class="logo-img"></div>
+        <div class="logo-text">
+          <h1>Autonomica</h1>
+
+        </div>
+      </div>
+    </div>
+    <div class="header-center">
+      <div class="sim-status" id="sim-status">
+        <span class="status-dot offline"></span>
+        <span class="status-label">Sleeping...</span>
+      </div>
+      <div class="tick-badge" id="tick-display">
+        <span class="tick-label">TICK</span>
+        <span class="tick-num">0</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-start" id="btn-start" onclick="startSim()">
+        ✨ Start ✨
+      </button>
+      <button class="btn btn-stop" id="btn-stop" onclick="stopSim()" disabled>
+        💤 Pause
+      </button>
+    </div>
+  </header>
+
+  <!-- Stats Row -->
+  <section class="stats-row">
+    <div class="stat-card">
+      <div class="stat-icon bounce-hover">🥐</div>
+      <div class="stat-info">
+        <span class="stat-label">Food Price</span>
+        <div class="stat-value-row">
+          <span class="stat-value" id="food-price">$5.00</span>
+          <span class="stat-change" id="food-change"></span>
+        </div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon bounce-hover">🧃</div>
+      <div class="stat-info">
+        <span class="stat-label">Energy Price</span>
+        <div class="stat-value-row">
+          <span class="stat-value" id="energy-price">$3.00</span>
+          <span class="stat-change" id="energy-change"></span>
+        </div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon bounce-hover">🐾</div>
+      <div class="stat-info">
+        <span class="stat-label">Active Agents</span>
+        <span class="stat-value active-val" id="active-count">0</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon bounce-hover">🥺</div>
+      <div class="stat-info">
+        <span class="stat-label">Starving</span>
+        <span class="stat-value danger-val" id="starving-count">0</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon bounce-hover">🍯</div>
+      <div class="stat-info">
+        <span class="stat-label">Total Economy</span>
+        <span class="stat-value economy-val" id="total-economy">$0</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Charts Row -->
+  <section class="charts-row">
+    <div class="chart-card">
+      <div class="chart-header">
+        <h3>💰 Agent Wealth Distribution</h3>
+      </div>
+      <div class="chart-body">
+        <canvas id="credits-chart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-header">
+        <h3>📈 Market Price History</h3>
+      </div>
+      <div class="chart-body">
+        <canvas id="price-chart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card chart-small">
+      <div class="chart-header">
+        <h3>🍩 Action Distribution</h3>
+      </div>
+      <div class="chart-body chart-body-donut">
+        <canvas id="action-chart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Content -->
+  <main class="main-grid">
+    <!-- Agents -->
+    <section class="panel agents-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">🐰 Agents</h2>
+        <span class="panel-badge" id="agent-count-badge">0 agents</span>
+      </div>
+      <div class="agents-grid" id="agents-grid">
+        <div class="loading">Loading agents...</div>
+      </div>
+    </section>
+
+    <!-- Events -->
+    <section class="panel events-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">💌 Live Feed</h2>
+        <span class="panel-badge" id="event-count-badge">0 events</span>
+      </div>
+      <div class="events-list" id="events-list">
+        <div class="loading">No events yet! Start the magic ✨</div>
+      </div>
+    </section>
+  </main>
+
+  <section class="panel betting-panel">
+    <div class="panel-header">
+      <h2 class="panel-title">Base USDC Prediction Market</h2>
+      <span class="panel-badge" id="wallet-badge">Wallet not connected</span>
+    </div>
+    <div class="betting-controls">
+      <button class="btn btn-start" id="btn-connect-wallet" onclick="connectWallet()">Connect Wallet</button>
+      <select id="market-select"></select>
+      <select id="outcome-select"></select>
+      <select id="side-select">
+        <option value="BUY_YES">BUY_YES</option>
+        <option value="BUY_NO">BUY_NO</option>
+        <option value="SELL_YES">SELL_YES</option>
+        <option value="SELL_NO">SELL_NO</option>
+      </select>
+      <input id="usdc-amount" type="number" min="0.01" step="0.01" placeholder="USDC amount" />
+      <button class="btn btn-stop" onclick="previewTrade()">Quote</button>
+      <button class="btn btn-start" onclick="placeTrade()">Place Trade</button>
+      <button class="btn btn-stop" onclick="loadPositions()">Refresh Positions</button>
+    </div>
+    <div class="betting-grid">
+      <div class="betting-card">
+        <h3>Quote</h3>
+        <pre id="quote-output">No quote yet</pre>
+      </div>
+      <div class="betting-card">
+        <h3>Positions</h3>
+        <pre id="positions-output">No positions loaded</pre>
+      </div>
+      <div class="betting-card">
+        <h3>Fee Revenue (30d)</h3>
+        <pre id="fees-output">Loading...</pre>
+      </div>
+    </div>
+  </section>
+
+
+
+  <script src="/app.js"></script>
+</body>
+
+</html>
