@@ -58,6 +58,27 @@ function cpmmQuote({ reserveYes, reserveNo, side, usdcAmount }) {
     throw new Error('Unsupported side');
 }
 
+/** Matches ChaosPredictionMarket._usdcOutFromSell (USDC 6-decimal float units). */
+export function usdcOutFromSell(reserveYes, reserveNo, side, net) {
+    const ry = Number(reserveYes);
+    const rn = Number(reserveNo);
+    const n = Number(net);
+    const k = ry * rn;
+    if (side === 'SELL_YES') {
+        if (n >= ry) throw new Error('Sell amount too large for pool depth');
+        const newYes = ry - n;
+        const newNo = k / newYes;
+        return newNo - rn;
+    }
+    if (side === 'SELL_NO') {
+        if (n >= rn) throw new Error('Sell amount too large for pool depth');
+        const newNo = rn - n;
+        const newYes = k / newNo;
+        return newYes - ry;
+    }
+    throw new Error('usdcOutFromSell only applies to SELL_* sides');
+}
+
 export async function listMarkets() {
     const { rows } = await pool.query(
         `SELECT pm.*, COUNT(mo.id)::int AS outcomes
@@ -159,30 +180,81 @@ export async function quoteTrade({ marketId, outcomeId, side, usdcAmount }) {
     const outcome = rows[0];
     if (!outcome) throw new Error('Outcome not found');
 
-    const feeRate = market.fee_bps / 10000;
-    const feeUsdc = Number(usdcAmount) * feeRate;
-    const netAmount = Number(usdcAmount) - feeUsdc;
+    const gross = Number(usdcAmount);
+    const feeBps = market.fee_bps;
+    const feeRate = feeBps / 10000;
+    /** Same as contract: fee on gross, net = gross - fee (used as curve input for both buys and sells). */
+    const feeOnGrossUsdc = gross * feeRate;
+    const netAmount = gross - feeOnGrossUsdc;
     const reserveYes = Number(outcome.reserve_yes);
     const reserveNo = Number(outcome.reserve_no);
     const result = cpmmQuote({ reserveYes, reserveNo, side, usdcAmount: netAmount });
-    const avgPrice = Math.abs(netAmount / result.sharesDelta);
+
+    const isBuy = side === 'BUY_YES' || side === 'BUY_NO';
+    let feeOnProceedsUsdc = 0;
+    let usdcToUser = 0;
+    let feeEmittedUsdc;
+
+    if (isBuy) {
+        /** Contract emit Trade: fee = fee on gross; treasury receives this USDC from user. */
+        feeEmittedUsdc = feeOnGrossUsdc;
+        const avgPrice = Math.abs(result.sharesDelta) > 0 ? Math.abs(netAmount / result.sharesDelta) : 0;
+        return {
+            marketId,
+            outcomeId,
+            side,
+            grossUsdc: gross,
+            feeUsdc: feeEmittedUsdc,
+            fee_on_gross_usdc: feeOnGrossUsdc,
+            fee_on_proceeds_usdc: 0,
+            fee_bps: feeBps,
+            net_to_pool_usdc: netAmount,
+            netUsdc: netAmount,
+            usdc_to_user: 0,
+            protocol_fee_destination: config.protocolTreasuryAddress || 'configure PROTOCOL_TREASURY_ADDRESS',
+            sharesDelta: result.sharesDelta,
+            avgPrice,
+            nextReserves: { yes: result.newYes, no: result.newNo },
+            min_out_kind: 'shares',
+            min_out_suggested: Math.abs(result.sharesDelta) * 0.985,
+            disclosure: {
+                summary:
+                    'Buy: fee on gross USDC goes to treasury; net goes into the CPMM (matches on-chain trade()).',
+            },
+        };
+    }
+
+    /** Sell path: second fee on proceeds (contract _usdcOutFromSell then feeOut). */
+    const usdcOutGross = usdcOutFromSell(reserveYes, reserveNo, side, netAmount);
+    feeOnProceedsUsdc = usdcOutGross * feeRate;
+    usdcToUser = usdcOutGross - feeOnProceedsUsdc;
+    /** Trade event fee field on-chain is feeOut (proceeds fee), not fee on gross. */
+    feeEmittedUsdc = feeOnProceedsUsdc;
+    const avgPrice =
+        Math.abs(result.sharesDelta) > 0 ? Math.abs(usdcToUser / result.sharesDelta) : 0;
 
     return {
         marketId,
         outcomeId,
         side,
-        grossUsdc: Number(usdcAmount),
-        feeUsdc,
-        fee_bps: market.fee_bps,
+        grossUsdc: gross,
+        feeUsdc: feeEmittedUsdc,
+        fee_on_gross_usdc: feeOnGrossUsdc,
+        fee_on_proceeds_usdc: feeOnProceedsUsdc,
+        fee_bps: feeBps,
         net_to_pool_usdc: netAmount,
-        protocol_fee_destination: config.protocolTreasuryAddress || 'configure PROTOCOL_TREASURY_ADDRESS',
         netUsdc: netAmount,
+        usdc_out_gross: usdcOutGross,
+        usdc_to_user: usdcToUser,
+        protocol_fee_destination: config.protocolTreasuryAddress || 'configure PROTOCOL_TREASURY_ADDRESS',
         sharesDelta: result.sharesDelta,
         avgPrice,
         nextReserves: { yes: result.newYes, no: result.newNo },
+        min_out_kind: 'usdc_to_user',
+        min_out_suggested: usdcToUser * 0.985,
         disclosure: {
             summary:
-                'Gross USDC is your payment. The protocol fee is deducted; the remainder goes into the AMM pool as liquidity for your trade. Sandbox agent credits are separate from USDC.',
+                'Sell: gross notional has fee-on-gross applied to net curve size (same as contract); proceeds then pay a second protocol fee; you receive usdc_to_user. Indexed Trade event fee = fee on proceeds.',
         },
     };
 }
@@ -420,13 +492,14 @@ export function getTransparencyPayload() {
         protocol_fee_percent: feeBps / 100,
         protocol_treasury: config.protocolTreasuryAddress || null,
         rules: [
-            'Sandbox economy (agent credits, food, energy) is simulated and has no monetary value.',
-            'USDC on Base is used only for prediction-market trades against the on-chain / recorded liquidity model.',
+            'Agents live in a simulated economy (credits, food, energy); that economy has no direct cash value — it is the game you are betting on.',
+            'USDC on Base is used for trades against the on-chain / recorded liquidity model: you are betting on which agent ends richest.',
             'A protocol fee is taken from each trade’s gross USDC; the rest goes to the pool for that trade.',
             'You can quote and trade (buy or sell) while the market is OPEN and before the betting deadline.',
-            'When the deadline passes, new trades stop. The winner is the agent with the highest sandbox credits at resolution (latest tick snapshot).',
+            'When the deadline passes, new trades stop. The winning agent is whoever has the highest credits in the economy at resolution (latest tick snapshot).',
             'The platform earns revenue only from the configured fee on trades, not from hidden spreads.',
             'Trades are executed on-chain in USDC; this API indexes confirmed transactions — do not trust off-chain balance changes without a matching tx.',
+            'Quote endpoint matches the contract: buys pay fee on gross to treasury; sells apply fee-on-gross to the curve size and a second fee on proceeds before USDC is sent to you.',
         ],
         explorer_base: 'https://basescan.org',
     };

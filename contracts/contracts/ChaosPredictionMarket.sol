@@ -10,7 +10,7 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title ChaosPredictionMarket
 /// @notice CPMM per outcome (YES/NO virtual reserves, USDC 6 decimals). Matches backend `cpmmQuote` math.
-/// @dev Register `marketId` / `outcomeCount` to mirror Postgres. Fee on gross for BUYS; fee on proceeds for SELLS.
+/// @dev Register `marketId` / `outcomeCount` to mirror Postgres. Fee on gross reduces `net` into the curve for both sides; SELLS additionally take fee on proceeds (`feeOut`).
 contract ChaosPredictionMarket is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 

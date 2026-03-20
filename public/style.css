@@ -1,4 +1,4 @@
-/* Agents of Chaos — professional dashboard (dark) */
+/* Agents of Chaos — economy sim + bet on richest (dark dashboard) */
 *,
 *::before,
 *::after {
@@ -124,6 +124,26 @@ body > * {
   text-transform: uppercase;
   letter-spacing: 0.1em;
   margin-top: 0.125rem;
+}
+
+.app-tagline {
+  margin: 0;
+  padding: 0.65rem 1.75rem 0.85rem;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  background: rgba(17, 21, 26, 0.55);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-tagline strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tagline-sep {
+  margin: 0 0.35rem;
+  color: var(--text-muted);
 }
 
 .sim-status {
@@ -260,6 +280,17 @@ body > * {
   font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--text-secondary);
+}
+
+.transparency-pitch {
+  margin: 0 0 0.85rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.transparency-pitch strong {
+  color: var(--text);
 }
 
 .transparency-list,
@@ -612,10 +643,27 @@ body > * {
 
 .panel-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 1rem;
   padding: 0.875rem 1rem;
   border-bottom: 1px solid var(--border);
+}
+
+.panel-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.panel-lede {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--text-muted);
+  max-width: 36rem;
 }
 
 .panel-title {
@@ -626,6 +674,8 @@ body > * {
 }
 
 .panel-badge {
+  flex-shrink: 0;
+  align-self: center;
   font-size: 0.6875rem;
   font-weight: 600;
   color: var(--accent);

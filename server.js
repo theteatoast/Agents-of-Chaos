@@ -40,8 +40,9 @@ app.listen({ port: config.port, host: '0.0.0.0' }, (err, address) => {
         app.log.error(err);
         process.exit(1);
     }
-    console.log(`\n🏦 AI Agents Economy Sandbox running at ${address}`);
+    console.log(`\n🏦 Agents of Chaos running at ${address}`);
     console.log('   Dashboard → http://localhost:' + config.port);
+    console.log('   Agents: economy (earn / trade / scam / starve) · humans bet on richest');
     console.log('   POST /simulation/start  → begin simulation');
     console.log('   POST /simulation/stop   → pause simulation\n');
 

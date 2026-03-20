@@ -1,7 +1,7 @@
 {
   "name": "ai-agents-economy-sandbox",
   "version": "1.0.0",
-  "description": "AI Agents Economy Sandbox — tick-based economic simulation powered by Groq LLM",
+  "description": "Agents dropped into an economy (earn, trade, scam, or starve) — bet on who ends richest; Groq-powered ticks + USDC markets on Base",
   "type": "module",
   "main": "server.js",
   "scripts": {

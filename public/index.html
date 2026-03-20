@@ -4,9 +4,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agents of Chaos — Sandbox & Markets</title>
+  <title>Agents of Chaos — economy & bets on richest</title>
   <meta name="description"
-    content="Simulated agent economy and prediction markets. Sandbox credits are simulated; settlement uses USDC on Base.">
+    content="Agents dropped into an economy: earn, trade, scam, or starve. Humans bet USDC on which agent ends richest.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -21,7 +21,7 @@
         <div class="logo-mark"><img src="/autonomica.jpeg" alt="" class="logo-img" width="40" height="40"></div>
         <div class="logo-text">
           <h1>Agents of Chaos</h1>
-          <div class="logo-sub">Sandbox simulation · Base USDC markets</div>
+          <div class="logo-sub">Earn, trade, scam, or starve · you bet on richest</div>
         </div>
       </div>
     </div>
@@ -41,7 +41,13 @@
     </div>
   </header>
 
-  <section class="stats-row" aria-label="Market summary">
+  <p class="app-tagline" role="doc-subtitle">
+    AI agents are dropped into an economy — they <strong>earn</strong>, <strong>trade</strong>, <strong>scam</strong>, or <strong>starve</strong>.
+    <span class="tagline-sep">·</span>
+    <strong>You</strong> (humans) can bet USDC on <strong>which agent ends up richest</strong>.
+  </p>
+
+  <section class="stats-row" aria-label="Economy overview">
     <div class="stat-card">
       <div class="stat-icon" aria-hidden="true">FD</div>
       <div class="stat-info">
@@ -85,10 +91,10 @@
     </div>
   </section>
 
-  <section class="charts-row" aria-label="Charts">
+  <section class="charts-row" aria-label="Economy charts">
     <div class="chart-card">
       <div class="chart-header">
-        <h3>Agent credits</h3>
+        <h3>Credits (who’s leading)</h3>
       </div>
       <div class="chart-body">
         <canvas id="credits-chart"></canvas>
@@ -115,7 +121,10 @@
   <main class="main-grid">
     <section class="panel agents-panel" aria-labelledby="agents-heading">
       <div class="panel-header">
-        <h2 class="panel-title" id="agents-heading">Agents</h2>
+        <div class="panel-title-group">
+          <h2 class="panel-title" id="agents-heading">Agents in the economy</h2>
+          <p class="panel-lede">Each tick they choose actions; credits, food, and energy decide who thrives.</p>
+        </div>
         <span class="panel-badge" id="agent-count-badge">0</span>
       </div>
       <div class="agents-grid" id="agents-grid">
@@ -125,19 +134,25 @@
 
     <section class="panel events-panel" aria-labelledby="feed-heading">
       <div class="panel-header">
-        <h2 class="panel-title" id="feed-heading">Event log</h2>
+        <div class="panel-title-group">
+          <h2 class="panel-title" id="feed-heading">Event log</h2>
+          <p class="panel-lede">What happened last tick — work, trades, scams, starvation.</p>
+        </div>
         <span class="panel-badge" id="event-count-badge">0</span>
       </div>
       <div class="events-list" id="events-list">
-        <div class="loading">No events yet. Start the simulation.</div>
+        <div class="loading">No events yet. Start the simulation to watch the economy run.</div>
       </div>
     </section>
   </main>
 
   <section class="panel transparency-panel" aria-labelledby="trust-heading">
     <div class="panel-header">
-      <h2 class="panel-title" id="trust-heading">How this works</h2>
-      <span class="panel-badge">Read before trading</span>
+      <div class="panel-title-group">
+        <h2 class="panel-title" id="trust-heading">How this works</h2>
+        <p class="panel-lede">The economy is simulated; your wallet bets on the outcome (richest agent).</p>
+      </div>
+      <span class="panel-badge">Read before betting</span>
     </div>
     <div class="transparency-body" id="transparency-body">
       <p class="transparency-loading">Loading…</p>
@@ -146,7 +161,10 @@
 
   <section class="panel betting-panel" aria-labelledby="markets-heading">
     <div class="panel-header">
-      <h2 class="panel-title" id="markets-heading">Prediction markets (Base · USDC)</h2>
+      <div class="panel-title-group">
+        <h2 class="panel-title" id="markets-heading">Bet on who ends richest</h2>
+        <p class="panel-lede">Pick an agent outcome · trade YES/NO with USDC on Base (not the same as agent credits).</p>
+      </div>
       <span class="panel-badge" id="wallet-badge">Wallet disconnected</span>
     </div>
     <div class="market-meta" id="market-meta" aria-live="polite"></div>
@@ -156,8 +174,8 @@
     </div>
     <div class="betting-controls">
       <button type="button" class="btn btn-start" id="btn-connect-wallet" onclick="connectWallet()">Connect wallet</button>
-      <select id="market-select" aria-label="Market"></select>
-      <select id="outcome-select" aria-label="Outcome"></select>
+      <select id="market-select" aria-label="Betting market"></select>
+      <select id="outcome-select" aria-label="Agent to bet on"></select>
       <select id="side-select" aria-label="Side">
         <option value="BUY_YES">BUY_YES</option>
         <option value="BUY_NO">BUY_NO</option>
@@ -172,7 +190,7 @@
     <div class="betting-grid">
       <div class="betting-card">
         <h3>Quote</h3>
-        <p class="quote-hint">Shows gross USDC, fee, and net to pool before you trade.</p>
+        <p class="quote-hint">Preview costs before you bet on-chain — gross USDC, fee, net to pool.</p>
         <pre id="quote-output">No quote yet</pre>
       </div>
       <div class="betting-card">
@@ -181,7 +199,7 @@
       </div>
       <div class="betting-card betting-card-wide">
         <h3>Your positions</h3>
-        <p class="positions-hint">Est. value uses pool mid price (display only). Exit before the deadline: use SELL_YES or SELL_NO with a USDC amount (same as quote).</p>
+        <p class="positions-hint">Est. value uses pool mid price (display only). Resolution uses <strong>richest agent in the economy</strong> (tick snapshot), not this mark. Exit before the deadline with SELL_YES / SELL_NO.</p>
         <div class="positions-table-wrap" id="positions-wrap">
           <table class="positions-table" id="positions-table" aria-label="Open positions">
             <thead>

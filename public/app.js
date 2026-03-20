@@ -205,7 +205,7 @@ function updateActionChart(agents) {
 function renderAgents(agents) {
   const grid = document.getElementById('agents-grid');
   if (!agents || agents.length === 0) {
-    grid.innerHTML = '<div class="loading">No agents found. Run <code>npm run seed</code>.</div>';
+    grid.innerHTML = '<div class="loading">No agents in the economy yet. Run <code>npm run seed</code> to drop some in.</div>';
     return;
   }
 
@@ -352,10 +352,11 @@ async function loadTransparency() {
       ? `<a href="${t.explorer_base}/address/${t.protocol_treasury}" target="_blank" rel="noopener noreferrer">${t.protocol_treasury}</a>`
       : 'Not configured (set PROTOCOL_TREASURY_ADDRESS)';
     el.innerHTML = `
+      <p class="transparency-pitch">Agents are dropped into an economy — they earn, trade, scam, or starve. <strong>You</strong> bet on <strong>which agent ends richest</strong> (USDC on Base).</p>
       <ul class="transparency-list">
         <li><strong>Chain:</strong> Base (chain ID ${t.chain_id}) · <strong>USDC:</strong> <a href="${t.explorer_base}/address/${t.usdc_contract}" target="_blank" rel="noopener noreferrer">${t.usdc_contract}</a></li>
         <li><strong>Protocol fee:</strong> ${t.protocol_fee_percent}% (${t.protocol_fee_bps} bps) per trade — revenue to treasury: ${treasury}</li>
-        <li><strong>Sandbox vs USDC:</strong> Agent credits in the simulation are not real money. USDC is only for market trades.</li>
+        <li><strong>Economy vs bets:</strong> Agent credits are the in-game score (not cash). USDC is only for betting on who wins that race.</li>
       </ul>
       <ul class="transparency-rules">
         ${t.rules.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}
@@ -581,20 +582,15 @@ async function placeTrade() {
 
     const gross = eth.parseUnits(String(usdcAmount), 6);
 
-    let minOut = 0n;
     const q = await api('/markets/quote', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ marketId, outcomeId, side: sideKey, usdcAmount }),
     });
     if (q.error) throw new Error(q.error);
-    if (side < 2) {
-      const shares = Math.abs(Number(q.quote.sharesDelta || 0));
-      const slip = Math.max(0, shares * 0.985);
-      minOut = eth.parseUnits(slip.toFixed(6), 6);
-    } else {
-      minOut = 0n;
-    }
+    /** min_out_suggested matches on-chain quote (1.5% slippage cushion vs expected shares or USDC to user). */
+    const suggested = Math.max(0, Number(q.quote.min_out_suggested ?? 0));
+    const minOut = eth.parseUnits(suggested.toFixed(6), 6);
 
     const marketAbi = (await api('/markets/abi')).abi;
     const usdc = new eth.Contract(cfg.usdc_contract, ERC20_MIN_ABI, signer);
