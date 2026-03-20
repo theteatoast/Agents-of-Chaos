@@ -9,6 +9,8 @@ const config = {
   usdcContractAddress: process.env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
   protocolTreasuryAddress: process.env.PROTOCOL_TREASURY_ADDRESS,
   protocolFeeBps: parseInt(process.env.PROTOCOL_FEE_BPS || '200', 10),
+  predictionMarketContractAddress: process.env.PREDICTION_MARKET_CONTRACT_ADDRESS || '',
+  allowUnverifiedTrades: process.env.ALLOW_UNVERIFIED_TRADES === 'true',
   tickInterval: 20000, // 20s — safe for Groq free tier (~30 req/min)
 };
 

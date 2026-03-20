@@ -11,6 +11,7 @@ import simulationRoutes from './routes/simulation.js';
 import predictionMarketRoutes from './routes/predictionMarkets.js';
 import walletRoutes from './routes/wallet.js';
 import positionsRoutes from './routes/positions.js';
+import { resolveMarketsByDeadline } from './services/predictionMarketService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: true });
@@ -43,4 +44,12 @@ app.listen({ port: config.port, host: '0.0.0.0' }, (err, address) => {
     console.log('   Dashboard → http://localhost:' + config.port);
     console.log('   POST /simulation/start  → begin simulation');
     console.log('   POST /simulation/stop   → pause simulation\n');
+
+    setInterval(() => {
+        resolveMarketsByDeadline()
+            .then((ids) => {
+                if (ids.length) app.log.info({ resolvedMarketIds: ids }, 'Markets resolved by betting deadline');
+            })
+            .catch((e) => app.log.error(e));
+    }, 5000);
 });

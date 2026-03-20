@@ -7,18 +7,31 @@ let actionChart = null;
 let connectedWallet = null;
 let marketOutcomes = [];
 let cachedMarkets = [];
+let marketConfig = null;
+let tradeLocked = false;
+let quoteLocked = false;
+function getEthers() {
+  if (typeof ethers !== 'undefined') return ethers;
+  if (typeof window !== 'undefined' && window.ethers) return window.ethers;
+  throw new Error('ethers failed to load');
+}
 const priceHistory = { labels: [], food: [], energy: [] };
 const MAX_PRICE_POINTS = 30;
 
-// === Chart.js Cute Defaults ===
-Chart.defaults.color = '#8c7b73';
-Chart.defaults.borderColor = '#f2e2d5'; // dashed cute border
-Chart.defaults.font.family = "'Nunito', sans-serif";
-Chart.defaults.font.size = 12;
-Chart.defaults.font.weight = '700';
+// Chart.js — dark dashboard defaults
+Chart.defaults.color = '#9aa4b2';
+Chart.defaults.borderColor = '#252b34';
+Chart.defaults.font.family = "'DM Sans', sans-serif";
+Chart.defaults.font.size = 11;
+Chart.defaults.font.weight = '500';
 
 // === API ===
-const api = (path, opts) => fetch(path, opts).then((r) => r.json());
+const api = (path, opts) =>
+  fetch(path, opts).then(async (r) => {
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { error: j.error || r.statusText || 'Request failed' };
+    return j;
+  });
 
 // === Controls ===
 async function startSim() {
@@ -32,12 +45,11 @@ async function stopSim() {
 
 // === Init Charts ===
 function initCharts() {
-  // Pastel Palette
-  const mint = '#8fd1b4';
-  const pink = '#ff9fa8';
-  const lavender = '#bcaefa';
-  const yellow = '#ffcf70';
-  const peach = '#ffb88a';
+  const accent = '#3d9eff';
+  const amber = '#fbbf24';
+  const positive = '#3ecf8e';
+  const negative = '#f87171';
+  const neutral = ['#5b8cff', '#3ecf8e', '#22d3ee', '#fbbf24', '#a78bfa', '#6b7684'];
 
   // Credits bar chart
   const ctxCredits = document.getElementById('credits-chart').getContext('2d');
@@ -48,17 +60,26 @@ function initCharts() {
       datasets: [{
         label: 'Credits',
         data: [],
-        backgroundColor: lavender,
-        borderRadius: 8,
-        barPercentage: 0.6,
+        backgroundColor: accent,
+        borderRadius: 6,
+        barPercentage: 0.65,
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        y: { beginAtZero: true, border: { display: false } },
-        x: { grid: { display: false }, border: { display: false } },
+        y: {
+          beginAtZero: true,
+          border: { display: false },
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: '#6b7684', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+        },
+        x: {
+          grid: { display: false },
+          border: { display: false },
+          ticks: { color: '#9aa4b2', maxRotation: 45, minRotation: 0 },
+        },
       },
     },
   });
@@ -71,29 +92,42 @@ function initCharts() {
       labels: [],
       datasets: [
         {
-          label: '🥐 Food',
+          label: 'Food',
           data: [],
-          borderColor: peach,
-          backgroundColor: '#ffebd9',
-          borderWidth: 4, tension: 0.4, fill: true,
-          pointBackgroundColor: '#fff', pointBorderColor: peach, pointRadius: 4, pointHoverRadius: 6,
+          borderColor: amber,
+          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          borderWidth: 2, tension: 0.35, fill: true,
+          pointBackgroundColor: '#141920', pointBorderColor: amber, pointRadius: 3, pointHoverRadius: 5,
         },
         {
-          label: '🧃 Energy',
+          label: 'Energy',
           data: [],
-          borderColor: mint,
-          backgroundColor: '#d8f2e7',
-          borderWidth: 4, tension: 0.4, fill: true,
-          pointBackgroundColor: '#fff', pointBorderColor: mint, pointRadius: 4, pointHoverRadius: 6,
+          borderColor: accent,
+          backgroundColor: 'rgba(61, 158, 255, 0.08)',
+          borderWidth: 2, tension: 0.35, fill: true,
+          pointBackgroundColor: '#141920', pointBorderColor: accent, pointRadius: 3, pointHoverRadius: 5,
         },
       ],
     },
     options: {
       responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } } },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { usePointStyle: true, boxWidth: 6, padding: 16, color: '#9aa4b2' },
+        },
+      },
       scales: {
-        y: { border: { display: false } },
-        x: { grid: { display: false }, border: { display: false } },
+        y: {
+          border: { display: false },
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: '#6b7684', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+        },
+        x: {
+          grid: { display: false },
+          border: { display: false },
+          ticks: { color: '#9aa4b2', maxRotation: 0 },
+        },
       },
     },
   });
@@ -106,13 +140,20 @@ function initCharts() {
       labels: ['WORK', 'BUY_FOOD', 'BUY_ENERGY', 'SELL_FOOD', 'SELL_ENERGY', 'HOLD'],
       datasets: [{
         data: [0, 0, 0, 0, 0, 0],
-        backgroundColor: [lavender, mint, '#aae3f5', yellow, peach, '#e0d8d5'],
-        borderWidth: 4, borderColor: '#ffffff', hoverOffset: 8
+        backgroundColor: neutral,
+        borderWidth: 2, borderColor: '#141920', hoverOffset: 6
       }],
     },
     options: {
-      responsive: true, maintainAspectRatio: false, cutout: '55%',
-      plugins: { legend: { position: 'right', labels: { usePointStyle: true, boxWidth: 8 } } },
+      responsive: true, maintainAspectRatio: false, cutout: '58%',
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: {
+            usePointStyle: true, boxWidth: 6, padding: 10, color: '#9aa4b2', font: { size: 10 },
+          },
+        },
+      },
     },
   });
 }
@@ -123,10 +164,10 @@ function updateCreditsChart(agents) {
   creditsChart.data.labels = agents.map((a) => a.name);
   creditsChart.data.datasets[0].data = agents.map((a) => Number(a.credits));
 
-  const pink = '#ff9fa8';
-  const lavender = '#bcaefa';
+  const ok = '#3d9eff';
+  const bad = '#f87171';
   creditsChart.data.datasets[0].backgroundColor = agents.map((a) =>
-    a.status === 'STARVING' ? pink : lavender
+    a.status === 'STARVING' ? bad : ok
   );
   creditsChart.update('none');
 }
@@ -164,21 +205,21 @@ function updateActionChart(agents) {
 function renderAgents(agents) {
   const grid = document.getElementById('agents-grid');
   if (!agents || agents.length === 0) {
-    grid.innerHTML = '<div class="loading">No agents found. Plz run seed!</div>';
+    grid.innerHTML = '<div class="loading">No agents found. Run <code>npm run seed</code>.</div>';
     return;
   }
 
-  document.getElementById('agent-count-badge').textContent = `${agents.length} agents`;
+  document.getElementById('agent-count-badge').textContent = String(agents.length);
 
   grid.innerHTML = agents.map((a) => {
     const isStarving = a.status === 'STARVING';
     return `
       <div class="agent-card ${isStarving ? 'starving' : ''}">
         <div class="agent-header">
-          <span class="agent-name">${a.name} ✨</span>
+          <span class="agent-name">${a.name}</span>
           <span class="agent-status ${isStarving ? 'starving' : 'active'}">${a.status}</span>
         </div>
-        <div class="agent-personality">"${a.personality}"</div>
+        <div class="agent-personality">${a.personality}</div>
         <div class="agent-stats">
           <div class="agent-stat">
             <div class="agent-stat-label">Credits</div>
@@ -247,12 +288,12 @@ function renderMarket(market) {
 function renderEvents(events) {
   const list = document.getElementById('events-list');
   if (!events || events.length === 0) {
-    list.innerHTML = '<div class="loading">No events yet! Start the magic ✨</div>';
-    document.getElementById('event-count-badge').textContent = '0 events';
+    list.innerHTML = '<div class="loading">No events yet. Start the simulation.</div>';
+    document.getElementById('event-count-badge').textContent = '0';
     return;
   }
 
-  document.getElementById('event-count-badge').textContent = `${events.length} events`;
+  document.getElementById('event-count-badge').textContent = String(events.length);
   const recent = events.slice(0, 50);
 
   list.innerHTML = recent.map((e) => {
@@ -260,7 +301,7 @@ function renderEvents(events) {
     const isWork = e.description.includes('worked') || e.description.includes('bought') || e.description.includes('sold');
     return `
       <div class="event-item ${isWarning ? 'warning' : isWork ? 'success' : ''}">
-        <div class="event-tick">🎀 Time: ${e.tick}</div>
+        <div class="event-tick">Tick ${e.tick}</div>
         <div class="event-text">${e.description}</div>
       </div>
     `;
@@ -276,12 +317,12 @@ function renderStatus(status) {
 
   if (status.running) {
     dot.className = 'status-dot online';
-    label.textContent = 'Awake ✨';
+    label.textContent = 'Running';
     startBtn.disabled = true;
     stopBtn.disabled = false;
   } else {
     dot.className = 'status-dot offline';
-    label.textContent = 'Sleeping 💤';
+    label.textContent = 'Stopped';
     startBtn.disabled = false;
     stopBtn.disabled = true;
   }
@@ -293,6 +334,7 @@ async function refresh() {
     const [agentsRes, marketRes, eventsRes, statusRes] = await Promise.all([
       api('/agents'), api('/market'), api('/events'), api('/simulation/status'),
     ]);
+    if (agentsRes.error || marketRes.error || eventsRes.error || statusRes.error) return;
     renderAgents(agentsRes.agents);
     renderMarket(marketRes.market);
     renderEvents(eventsRes.events);
@@ -300,14 +342,108 @@ async function refresh() {
   } catch (err) { console.error('Polling error:', err); }
 }
 
+async function loadTransparency() {
+  try {
+    const res = await api('/markets/transparency');
+    const t = res.transparency;
+    const el = document.getElementById('transparency-body');
+    if (!t || !el) return;
+    const treasury = t.protocol_treasury
+      ? `<a href="${t.explorer_base}/address/${t.protocol_treasury}" target="_blank" rel="noopener noreferrer">${t.protocol_treasury}</a>`
+      : 'Not configured (set PROTOCOL_TREASURY_ADDRESS)';
+    el.innerHTML = `
+      <ul class="transparency-list">
+        <li><strong>Chain:</strong> Base (chain ID ${t.chain_id}) · <strong>USDC:</strong> <a href="${t.explorer_base}/address/${t.usdc_contract}" target="_blank" rel="noopener noreferrer">${t.usdc_contract}</a></li>
+        <li><strong>Protocol fee:</strong> ${t.protocol_fee_percent}% (${t.protocol_fee_bps} bps) per trade — revenue to treasury: ${treasury}</li>
+        <li><strong>Sandbox vs USDC:</strong> Agent credits in the simulation are not real money. USDC is only for market trades.</li>
+      </ul>
+      <ul class="transparency-rules">
+        ${t.rules.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}
+      </ul>
+    `;
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function formatDuration(ms) {
+  if (ms <= 0) return '0s';
+  let sec = Math.floor(ms / 1000);
+  const d = Math.floor(sec / 86400);
+  sec -= d * 86400;
+  const h = Math.floor(sec / 3600);
+  sec -= h * 3600;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (h || d) parts.push(`${h}h`);
+  parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(' ');
+}
+
+function updateMarketMetaAndCountdown() {
+  const select = document.getElementById('market-select');
+  const meta = document.getElementById('market-meta');
+  const row = document.getElementById('countdown-row');
+  const val = document.getElementById('countdown-value');
+  if (!select || !meta || !row || !val) return;
+  const id = Number(select.value);
+  const m = cachedMarkets.find((x) => x.id === id);
+  if (!m) {
+    meta.textContent = '';
+    row.hidden = true;
+    return;
+  }
+  const trading = m.trading_open !== false && m.status === 'OPEN';
+  const closes = m.betting_closes_at ? new Date(m.betting_closes_at) : null;
+  meta.innerHTML = `
+    <span class="meta-pill ${trading ? 'meta-open' : 'meta-closed'}">${trading ? 'Trading open' : 'Trading closed'}</span>
+    <span class="meta-text">Market status: <strong>${escapeHtml(m.status)}</strong>
+    ${closes ? ` · Closes (server): ${closes.toLocaleString()}` : ''}
+    </span>
+  `;
+  if (closes && m.status === 'OPEN') {
+    row.hidden = false;
+    const left = closes.getTime() - Date.now();
+    val.textContent = left > 0 ? formatDuration(left) : 'Closed — resolving';
+  } else {
+    row.hidden = true;
+  }
+}
+
+async function loadMarketConfig() {
+  try {
+    const c = await api('/markets/config');
+    if (!c.error) marketConfig = c;
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 async function loadMarkets() {
   const res = await api('/markets');
+  if (res.error) return;
   cachedMarkets = res.markets || [];
   const select = document.getElementById('market-select');
-  select.innerHTML = cachedMarkets.map((m) => `<option value="${m.id}">${m.title} (status: ${m.status})</option>`).join('');
+  const prev = select.value;
+  select.innerHTML = cachedMarkets.map((m) => {
+    const tag = m.trading_open && m.status === 'OPEN' ? '' : ' [closed]';
+    return `<option value="${m.id}">${m.title}${tag}</option>`;
+  }).join('');
+  if (prev && cachedMarkets.some((x) => String(x.id) === prev)) select.value = prev;
   if (cachedMarkets.length) {
-    await loadOutcomes(Number(cachedMarkets[0].id));
+    const id = Number(select.value || cachedMarkets[0].id);
+    await loadOutcomes(id);
   }
+  updateMarketMetaAndCountdown();
   const feeRes = await api('/markets/fees/daily');
   document.getElementById('fees-output').textContent = JSON.stringify(feeRes.fees || [], null, 2);
 }
@@ -340,56 +476,212 @@ async function connectWallet() {
     body: JSON.stringify({ walletAddress: addr, signature }),
   });
   connectedWallet = addr.toLowerCase();
-  document.getElementById('wallet-badge').textContent = connectedWallet;
+  document.getElementById('wallet-badge').textContent = `${connectedWallet.slice(0, 6)}…${connectedWallet.slice(-4)}`;
   await loadPositions();
 }
 
 async function previewTrade() {
-  const marketId = Number(document.getElementById('market-select').value);
-  const outcomeId = Number(document.getElementById('outcome-select').value);
-  const side = document.getElementById('side-select').value;
-  const usdcAmount = Number(document.getElementById('usdc-amount').value);
-  const quoteRes = await api('/markets/quote', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ marketId, outcomeId, side, usdcAmount }),
-  });
-  document.getElementById('quote-output').textContent = JSON.stringify(quoteRes.quote || quoteRes, null, 2);
+  if (quoteLocked) return;
+  quoteLocked = true;
+  const btn = document.getElementById('btn-quote');
+  if (btn) btn.disabled = true;
+  try {
+    const marketId = Number(document.getElementById('market-select').value);
+    const outcomeId = Number(document.getElementById('outcome-select').value);
+    const side = document.getElementById('side-select').value;
+    const usdcAmount = Number(document.getElementById('usdc-amount').value);
+    const quoteRes = await api('/markets/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketId, outcomeId, side, usdcAmount }),
+    });
+    if (quoteRes.error) {
+      document.getElementById('quote-output').textContent = quoteRes.error;
+      return;
+    }
+    document.getElementById('quote-output').textContent = JSON.stringify(quoteRes.quote || quoteRes, null, 2);
+  } catch (e) {
+    document.getElementById('quote-output').textContent = String(e.message || e);
+  } finally {
+    quoteLocked = false;
+    if (btn) btn.disabled = false;
+  }
 }
 
+const ERC20_MIN_ABI = [
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+];
+
+const SIDE_MAP = { BUY_YES: 0, BUY_NO: 1, SELL_YES: 2, SELL_NO: 3 };
+
 async function placeTrade() {
+  if (tradeLocked) return;
   if (!connectedWallet) {
     alert('Connect wallet first');
     return;
   }
+  if (!marketConfig?.prediction_market_contract) {
+    alert('Set PREDICTION_MARKET_CONTRACT_ADDRESS on the server and deploy/register the market on-chain.');
+    return;
+  }
+
   const marketId = Number(document.getElementById('market-select').value);
   const outcomeId = Number(document.getElementById('outcome-select').value);
-  const side = document.getElementById('side-select').value;
+  const sideKey = document.getElementById('side-select').value;
   const usdcAmount = Number(document.getElementById('usdc-amount').value);
-  const fakeTxHash = `0xsimulated${Date.now().toString(16)}`;
-  const tradeRes = await api('/markets/trade', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ walletAddress: connectedWallet, marketId, outcomeId, side, usdcAmount, txHash: fakeTxHash }),
-  });
-  document.getElementById('quote-output').textContent = JSON.stringify(tradeRes.trade || tradeRes, null, 2);
-  await loadPositions();
-  await loadMarkets();
+
+  const m = cachedMarkets.find((x) => x.id === marketId);
+  if (!m || m.status !== 'OPEN' || !m.trading_open) {
+    alert('Trading is closed for this market.');
+    return;
+  }
+
+  const outcome = marketOutcomes.find((o) => o.id === outcomeId);
+  if (!outcome || outcome.outcome_index === undefined) {
+    alert('Outcome not loaded — refresh and try again.');
+    return;
+  }
+
+  const side = SIDE_MAP[sideKey];
+  if (side === undefined) {
+    alert('Invalid side');
+    return;
+  }
+
+  tradeLocked = true;
+  const btnTrade = document.getElementById('btn-trade');
+  const btnQuote = document.getElementById('btn-quote');
+  if (btnTrade) btnTrade.disabled = true;
+  if (btnQuote) btnQuote.disabled = true;
+
+  try {
+    const eth = getEthers();
+    if (!window.ethereum) throw new Error('No wallet');
+
+    const cfg = marketConfig || (await api('/markets/config'));
+    marketConfig = cfg;
+
+    const provider = new eth.BrowserProvider(window.ethereum);
+    const net = await provider.getNetwork();
+    if (Number(net.chainId) !== Number(cfg.chain_id)) {
+      const hex = '0x' + Number(cfg.chain_id).toString(16);
+      try {
+        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
+      } catch (e) {
+        throw new Error('Please switch your wallet to Base (chain ' + cfg.chain_id + ').');
+      }
+    }
+
+    const signer = await provider.getSigner();
+    const user = (await signer.getAddress()).toLowerCase();
+    if (user !== connectedWallet) {
+      throw new Error('Connected wallet mismatch — reconnect.');
+    }
+
+    const gross = eth.parseUnits(String(usdcAmount), 6);
+
+    let minOut = 0n;
+    const q = await api('/markets/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketId, outcomeId, side: sideKey, usdcAmount }),
+    });
+    if (q.error) throw new Error(q.error);
+    if (side < 2) {
+      const shares = Math.abs(Number(q.quote.sharesDelta || 0));
+      const slip = Math.max(0, shares * 0.985);
+      minOut = eth.parseUnits(slip.toFixed(6), 6);
+    } else {
+      minOut = 0n;
+    }
+
+    const marketAbi = (await api('/markets/abi')).abi;
+    const usdc = new eth.Contract(cfg.usdc_contract, ERC20_MIN_ABI, signer);
+    const market = new eth.Contract(cfg.prediction_market_contract, marketAbi, signer);
+
+    if (side < 2) {
+      const cur = await usdc.allowance(user, cfg.prediction_market_contract);
+      if (cur < gross) {
+        document.getElementById('quote-output').textContent = 'Approving USDC spend…';
+        const ap = await usdc.approve(cfg.prediction_market_contract, eth.MaxUint256);
+        await ap.wait();
+      }
+    }
+
+    document.getElementById('quote-output').textContent = 'Confirm the trade in your wallet…';
+    const tx = await market.trade(marketId, outcome.outcome_index, side, gross, minOut);
+    document.getElementById('quote-output').textContent = 'Waiting for confirmation…\n' + tx.hash;
+    const receipt = await tx.wait();
+    if (receipt.status !== 1) throw new Error('Transaction reverted');
+
+    const confirm = await api('/markets/trade/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txHash: receipt.hash }),
+    });
+    if (confirm.error) throw new Error(confirm.error);
+
+    document.getElementById('quote-output').textContent = JSON.stringify({ receipt: receipt.hash, indexed: confirm }, null, 2);
+    await loadPositions();
+    await loadMarkets();
+  } catch (e) {
+    console.error(e);
+    document.getElementById('quote-output').textContent = 'Error: ' + (e.message || e);
+    alert(e.message || e);
+  } finally {
+    tradeLocked = false;
+    if (btnTrade) btnTrade.disabled = false;
+    if (btnQuote) btnQuote.disabled = false;
+  }
+}
+
+function renderPositionsTable(positions) {
+  const tbody = document.getElementById('positions-tbody');
+  if (!tbody) return;
+  if (!positions || !positions.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">No open positions</td></tr>';
+    return;
+  }
+  tbody.innerHTML = positions.map((p) => {
+    const title = escapeHtml((p.title || '').slice(0, 32));
+    const agent = escapeHtml(p.agent_name || '');
+    const unreal = Number(p.unrealized_pnl_usdc);
+    const unrealClass = unreal >= 0 ? 'pnl-pos' : 'pnl-neg';
+    return `<tr>
+      <td>${title}</td>
+      <td>${agent}</td>
+      <td class="mono">${Number(p.shares).toFixed(4)}</td>
+      <td class="mono">${Number(p.total_cost_usdc).toFixed(4)}</td>
+      <td class="mono">${Number(p.estimated_mark_value_usdc).toFixed(4)}</td>
+      <td class="mono ${unrealClass}">${unreal.toFixed(4)}</td>
+      <td>${escapeHtml(p.status || '')}</td>
+    </tr>`;
+  }).join('');
 }
 
 async function loadPositions() {
-  if (!connectedWallet) return;
+  const tbody = document.getElementById('positions-tbody');
+  if (!connectedWallet) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">Connect wallet to view positions</td></tr>';
+    return;
+  }
   const positionsRes = await api(`/positions/${connectedWallet}`);
-  document.getElementById('positions-output').textContent = JSON.stringify(positionsRes.positions || [], null, 2);
+  renderPositionsTable(positionsRes.positions || []);
 }
 
 // === Boot ===
 initCharts();
 refresh();
+loadTransparency();
+loadMarketConfig();
 loadMarkets();
 setInterval(refresh, 3000);
+setInterval(loadMarkets, 5000);
+setInterval(updateMarketMetaAndCountdown, 1000);
 document.getElementById('market-select')?.addEventListener('change', (e) => {
   loadOutcomes(Number(e.target.value));
+  updateMarketMetaAndCountdown();
 });
 
 window.connectWallet = connectWallet;

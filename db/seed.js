@@ -1,20 +1,26 @@
 import pool from './index.js';
 
 const AGENTS = [
-    { name: 'Atlas', personality: 'Aggressive trader, always looking for profit' },
-    { name: 'Nova', personality: 'Conservative saver, hoards resources' },
-    { name: 'Blaze', personality: 'Risk-taker, loves volatile markets' },
-    { name: 'Echo', personality: 'Balanced strategist, adapts to market conditions' },
-    { name: 'Frost', personality: 'Cautious and defensive, focuses on survival' },
-    { name: 'Spark', personality: 'Opportunistic, buys low and sells high' },
-    { name: 'Drift', personality: 'Lazy, prefers to hold and do nothing' },
-    { name: 'Pulse', personality: 'Workaholic, always grinding for credits' },
-    { name: 'Shade', personality: 'Contrarian, does the opposite of the crowd' },
-    { name: 'Volt', personality: 'Energy-obsessed, prioritizes energy above all' },
+    { name: 'tk', personality: 'Aggressive trader, always looking for profit' },
+    { name: 'Srijan', personality: 'Conservative saver, hoards resources' },
+    { name: 'Kunal', personality: 'Risk-taker, loves volatile markets' },
+    { name: 'Ahaan Raizada', personality: 'Balanced strategist, adapts to market conditions' },
+    { name: 'Saxenasahab', personality: 'Cautious and defensive, focuses on survival' },
+    { name: 'Hamza Ali Mazari', personality: 'Opportunistic, buys low and sells high' },
+    { name: 'NPC 1', personality: 'Lazy, prefers to hold and do nothing' },
+    { name: 'NPC 2', personality: 'Workaholic, always grinding for credits' },
+    { name: 'NPC 3', personality: 'Contrarian, does the opposite of the crowd' },
+    { name: 'NPC 4', personality: 'Energy-obsessed, prioritizes energy above all' },
 ];
 
 async function seed() {
-    // Clear existing data
+    // Clear existing data (order respects FKs)
+    await pool.query('DELETE FROM protocol_fees');
+    await pool.query('DELETE FROM market_trades');
+    await pool.query('DELETE FROM market_positions');
+    await pool.query('DELETE FROM market_outcomes');
+    await pool.query('DELETE FROM prediction_markets');
+    await pool.query('DELETE FROM tick_snapshots');
     await pool.query('DELETE FROM event_logs');
     await pool.query('DELETE FROM market_state');
     await pool.query('DELETE FROM agents');
@@ -36,12 +42,28 @@ async function seed() {
         [0, 5.0, 3.0]
     );
 
-    // Create default USDC prediction market for richest agent
+    // Default close: tomorrow 13:00 local, or MARKET_CLOSES_AT (ISO 8601)
+    const closesAt = process.env.MARKET_CLOSES_AT
+        ? new Date(process.env.MARKET_CLOSES_AT)
+        : (() => {
+            const d = new Date();
+            d.setDate(d.getDate() + 1);
+            d.setHours(13, 0, 0, 0);
+            return d;
+        })();
+
+    // High settlement_tick so resolution is driven by betting_closes_at (see resolveMarketsByDeadline)
     const marketInsert = await pool.query(
-        `INSERT INTO prediction_markets (slug, title, settlement_tick, status, fee_bps)
-         VALUES ($1, $2, $3, 'OPEN', $4)
+        `INSERT INTO prediction_markets (slug, title, settlement_tick, status, fee_bps, betting_opens_at, betting_closes_at)
+         VALUES ($1, $2, $3, 'OPEN', $4, NOW(), $5)
          RETURNING id`,
-        ['richest-agent-t200', 'Who will be richest at tick 200?', 200, 200]
+        [
+            'richest-agent-session',
+            'Which agent has the most sandbox credits when betting closes?',
+            999999,
+            200,
+            closesAt,
+        ]
     );
     await pool.query(
         `INSERT INTO market_outcomes (market_id, agent_id)

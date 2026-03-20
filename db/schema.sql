@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS prediction_markets (
   slug TEXT UNIQUE NOT NULL,
   title TEXT NOT NULL,
   settlement_tick INT NOT NULL,
+  betting_opens_at TIMESTAMPTZ DEFAULT NOW(),
+  betting_closes_at TIMESTAMPTZ,
   status TEXT NOT NULL DEFAULT 'OPEN', -- OPEN, PAUSED, CLOSED, RESOLVED
   fee_bps INT NOT NULL DEFAULT 200,
   winning_agent_id INT REFERENCES agents(id),
