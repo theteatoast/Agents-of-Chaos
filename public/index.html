@@ -180,7 +180,7 @@
     </div>
 
     <div class="pm-card" id="pm-card">
-      <div class="pm-card-top">
+        <div class="pm-card-top">
         <div class="pm-brand">
           <div class="pm-icon" aria-hidden="true">
             <span class="pm-icon-tri"></span>
@@ -190,7 +190,14 @@
             <div class="pm-close-line" id="pm-close-line">—</div>
           </div>
         </div>
-        <button type="button" class="pm-connect" id="btn-connect-wallet" onclick="connectWallet()">Connect</button>
+        <div class="pm-wallet-bar" id="pm-wallet-bar">
+          <button type="button" class="pm-connect" id="btn-connect-wallet">Connect wallet</button>
+          <div class="pm-wallet-connected" id="wallet-connected" hidden>
+            <span class="pm-wallet-addr mono" id="wallet-connected-addr" title=""></span>
+            <button type="button" class="pm-wallet-switch" id="btn-change-wallet" title="Use another wallet">Switch</button>
+            <button type="button" class="pm-disconnect" id="btn-disconnect-wallet">Disconnect</button>
+          </div>
+        </div>
       </div>
 
       <label class="pm-field-label" for="market-select">Market</label>
@@ -267,6 +274,16 @@
       </div>
     </div>
   </section>
+
+  <div id="wallet-modal" class="wallet-modal" hidden aria-modal="true" role="dialog" aria-labelledby="wallet-modal-title">
+    <div class="wallet-modal-backdrop" id="wallet-modal-backdrop" aria-hidden="true"></div>
+    <div class="wallet-modal-card">
+      <h3 class="wallet-modal-title" id="wallet-modal-title">Connect a wallet</h3>
+      <p class="wallet-modal-hint">Choose an installed wallet. If you use several (e.g. MetaMask + Rabby), pick which one should connect to this site.</p>
+      <ul id="wallet-list" class="wallet-list"></ul>
+      <button type="button" class="wallet-modal-cancel" id="wallet-modal-cancel">Cancel</button>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js" crossorigin="anonymous"></script>
   <script src="/app.js"></script>

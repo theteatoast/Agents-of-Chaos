@@ -5,6 +5,10 @@ let creditsChart = null;
 let priceChart = null;
 let actionChart = null;
 let connectedWallet = null;
+/** @type {object | null} EIP-1193 provider from EIP-6963 or window.ethereum */
+let activeEip1193Provider = null;
+let walletLabel = '';
+let accountsChangedHandler = null;
 let marketOutcomes = [];
 let cachedMarkets = [];
 let cachedPositions = [];
@@ -21,6 +25,210 @@ function getEthers() {
 }
 const priceHistory = { labels: [], food: [], energy: [] };
 const MAX_PRICE_POINTS = 30;
+
+/** EIP-1193 provider selected by user (EIP-6963 or window.ethereum). */
+function getEip1193Provider() {
+  return activeEip1193Provider || window.ethereum || null;
+}
+
+function providerDisplayName(p) {
+  if (!p) return 'Wallet';
+  if (p.isMetaMask && !p.isBraveWallet) return 'MetaMask';
+  if (p.isRabby) return 'Rabby';
+  if (p.isCoinbaseWallet) return 'Coinbase Wallet';
+  if (p.isBraveWallet) return 'Brave Wallet';
+  if (p.isTrust) return 'Trust Wallet';
+  return 'Browser wallet';
+}
+
+function collectEip6963Providers() {
+  return new Promise((resolve) => {
+    const announced = new Map();
+    function onAnnounce(event) {
+      try {
+        const { info, provider } = event.detail;
+        if (info?.uuid && provider?.request) announced.set(info.uuid, { info, provider });
+      } catch (_) {}
+    }
+    window.addEventListener('eip6963:announceProvider', onAnnounce);
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+    setTimeout(() => {
+      window.removeEventListener('eip6963:announceProvider', onAnnounce);
+      resolve([...announced.values()]);
+    }, 180);
+  });
+}
+
+async function collectWalletOptions() {
+  const eip6963 = await collectEip6963Providers();
+  if (eip6963.length > 0) {
+    return eip6963.map(({ info, provider }) => ({
+      id: info.uuid,
+      name: info.name || 'Wallet',
+      icon: info.icon || null,
+      provider,
+    }));
+  }
+  const eth = window.ethereum;
+  if (!eth) return [];
+  if (eth.providers && eth.providers.length > 1) {
+    return eth.providers.map((p, i) => ({
+      id: `legacy-${i}`,
+      name: providerDisplayName(p),
+      icon: null,
+      provider: p,
+    }));
+  }
+  return [{ id: 'default', name: providerDisplayName(eth), icon: null, provider: eth }];
+}
+
+function closeWalletModal() {
+  const modal = document.getElementById('wallet-modal');
+  if (modal) modal.hidden = true;
+}
+
+function openWalletModal(options) {
+  const modal = document.getElementById('wallet-modal');
+  const list = document.getElementById('wallet-list');
+  if (!modal || !list) return;
+  list.innerHTML = '';
+  options.forEach((opt) => {
+    const li = document.createElement('li');
+    li.className = 'wallet-list-item';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'wallet-list-btn';
+    const label = document.createElement('span');
+    label.className = 'wallet-list-label';
+    label.textContent = opt.name;
+    if (opt.icon) {
+      const img = document.createElement('img');
+      img.className = 'wallet-list-icon';
+      img.src = opt.icon;
+      img.alt = '';
+      img.width = 28;
+      img.height = 28;
+      btn.appendChild(img);
+    }
+    btn.appendChild(label);
+    btn.addEventListener('click', async () => {
+      closeWalletModal();
+      try {
+        await connectWithProvider(opt.provider, opt.name);
+      } catch (e) {
+        console.error(e);
+        alert(e?.message || String(e));
+      }
+    });
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+  modal.hidden = false;
+}
+
+function teardownAccountsListener() {
+  if (activeEip1193Provider && accountsChangedHandler) {
+    try {
+      activeEip1193Provider.removeListener('accountsChanged', accountsChangedHandler);
+    } catch (_) {}
+  }
+  accountsChangedHandler = null;
+}
+
+function onAccountsChanged(accounts) {
+  if (!accounts || accounts.length === 0) {
+    disconnectWallet();
+    return;
+  }
+  const next = String(accounts[0]).toLowerCase();
+  if (next !== connectedWallet) {
+    connectedWallet = next;
+    updateWalletChrome();
+    loadPositions();
+  }
+}
+
+function setupAccountsListener(provider) {
+  teardownAccountsListener();
+  if (!provider?.on) return;
+  accountsChangedHandler = onAccountsChanged;
+  provider.on('accountsChanged', accountsChangedHandler);
+}
+
+function updateWalletChrome() {
+  const badge = document.getElementById('wallet-badge');
+  const btnConnect = document.getElementById('btn-connect-wallet');
+  const connectedRow = document.getElementById('wallet-connected');
+  const addrEl = document.getElementById('wallet-connected-addr');
+  if (connectedWallet) {
+    const short = `${connectedWallet.slice(0, 6)}…${connectedWallet.slice(-4)}`;
+    if (badge) {
+      badge.textContent = walletLabel ? `${walletLabel} · ${short}` : short;
+    }
+    if (addrEl) {
+      addrEl.textContent = short;
+      addrEl.title = connectedWallet;
+    }
+    if (btnConnect) btnConnect.hidden = true;
+    if (connectedRow) connectedRow.hidden = false;
+  } else {
+    if (badge) badge.textContent = 'Wallet disconnected';
+    if (btnConnect) btnConnect.hidden = false;
+    if (connectedRow) connectedRow.hidden = true;
+  }
+}
+
+async function connectWithProvider(provider, name) {
+  if (!provider?.request) throw new Error('Invalid wallet provider');
+  await loadMarketConfig();
+  teardownAccountsListener();
+  activeEip1193Provider = provider;
+  walletLabel = name || providerDisplayName(provider);
+
+  const [addr] = await provider.request({ method: 'eth_requestAccounts' });
+  const challengeRes = await api('/wallet/challenge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ walletAddress: addr }),
+  });
+  const signature = await provider.request({
+    method: 'personal_sign',
+    params: [challengeRes.challenge.message, addr],
+  });
+  await api('/wallet/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ walletAddress: addr, signature }),
+  });
+  connectedWallet = addr.toLowerCase();
+  setupAccountsListener(provider);
+  updateWalletChrome();
+  await loadPositions();
+}
+
+async function openWalletChooser() {
+  const options = await collectWalletOptions();
+  if (options.length === 0) {
+    alert('No EVM wallet detected. Install MetaMask, Rabby, Coinbase Wallet, or another browser extension.');
+    return;
+  }
+  if (options.length === 1) {
+    await connectWithProvider(options[0].provider, options[0].name);
+    return;
+  }
+  openWalletModal(options);
+}
+
+function disconnectWallet() {
+  teardownAccountsListener();
+  connectedWallet = null;
+  activeEip1193Provider = null;
+  walletLabel = '';
+  updateWalletChrome();
+  const tbody = document.getElementById('positions-tbody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">Connect wallet to view positions</td></tr>';
+  cachedPositions = [];
+}
 
 // Chart.js — dark dashboard defaults
 Chart.defaults.color = '#9aa4b2';
@@ -640,32 +848,12 @@ async function loadOutcomes(marketId) {
 }
 
 async function connectWallet() {
-  if (!window.ethereum) {
-    alert('No EVM wallet detected');
-    return;
+  try {
+    await openWalletChooser();
+  } catch (e) {
+    console.error(e);
+    alert(e?.message || String(e));
   }
-  await loadMarketConfig();
-  const [addr] = await window.ethereum.request({ method: 'eth_requestAccounts' });
-  const challengeRes = await api('/wallet/challenge', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ walletAddress: addr }),
-  });
-  const signature = await window.ethereum.request({
-    method: 'personal_sign',
-    params: [challengeRes.challenge.message, addr],
-  });
-  await api('/wallet/verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ walletAddress: addr, signature }),
-  });
-  connectedWallet = addr.toLowerCase();
-  const short = `${connectedWallet.slice(0, 6)}…${connectedWallet.slice(-4)}`;
-  document.getElementById('wallet-badge').textContent = short;
-  const connectBtn = document.getElementById('btn-connect-wallet');
-  if (connectBtn) connectBtn.textContent = short;
-  await loadPositions();
 }
 
 async function previewTrade() {
@@ -706,12 +894,13 @@ const ERC20_MIN_ABI = [
 ];
 
 async function getUsdcBalance() {
-  if (!connectedWallet || !window.ethereum) return 0;
+  const eip = getEip1193Provider();
+  if (!connectedWallet || !eip) return 0;
   if (!marketConfig?.usdc_contract) await loadMarketConfig();
   if (!marketConfig?.usdc_contract) return 0;
   try {
     const eth = getEthers();
-    const provider = new eth.BrowserProvider(window.ethereum);
+    const provider = new eth.BrowserProvider(eip);
     const usdc = new eth.Contract(marketConfig.usdc_contract, ERC20_MIN_ABI, provider);
     const raw = await usdc.balanceOf(connectedWallet);
     return Number(eth.formatUnits(raw, 6));
@@ -779,19 +968,20 @@ async function applyAmountMax() {
  */
 async function ensureWalletOnChain(eth, cfg) {
   if (!cfg?.chain_id) throw new Error('Server config missing chain_id');
-  if (!window.ethereum) throw new Error('No wallet');
+  const eip = getEip1193Provider();
+  if (!eip) throw new Error('No wallet — connect a wallet first');
   const want = BigInt(cfg.chain_id);
-  let provider = new eth.BrowserProvider(window.ethereum);
+  let provider = new eth.BrowserProvider(eip);
   let net = await provider.getNetwork();
   if (net.chainId === want) return provider;
 
   const hex = '0x' + want.toString(16);
   try {
-    await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
+    await eip.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
   } catch (e) {
     const code = e?.code;
     if (code === 4902 && Number(cfg.chain_id) === 8453) {
-      await window.ethereum.request({
+      await eip.request({
         method: 'wallet_addEthereumChain',
         params: [
           {
@@ -803,16 +993,16 @@ async function ensureWalletOnChain(eth, cfg) {
           },
         ],
       });
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
+      await eip.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
     } else {
       throw new Error('Please switch your wallet to Base (chain ' + cfg.chain_id + ').');
     }
   }
-  provider = new eth.BrowserProvider(window.ethereum);
+  provider = new eth.BrowserProvider(eip);
   net = await provider.getNetwork();
   if (net.chainId !== want) {
     throw new Error(
-      `Wallet is still not on chain ${cfg.chain_id} (Base). Rabby reports chain ${net.chainId}. Open Base in the wallet and try again.`
+      `Wallet is still not on chain ${cfg.chain_id} (Base). Current chain: ${net.chainId}. Switch to Base in your wallet and try again.`
     );
   }
   return provider;
@@ -875,7 +1065,7 @@ async function placeTrade() {
 
   try {
     const eth = getEthers();
-    if (!window.ethereum) throw new Error('No wallet');
+    if (!getEip1193Provider()) throw new Error('No wallet — connect a wallet first');
 
     let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
     if (!cfg) {
@@ -1109,6 +1299,18 @@ document.getElementById('btn-trade')?.addEventListener('click', (e) => {
 });
 
 window.connectWallet = connectWallet;
+window.disconnectWallet = disconnectWallet;
 window.previewTrade = previewTrade;
 window.placeTrade = placeTrade;
 window.loadPositions = loadPositions;
+
+document.getElementById('btn-connect-wallet')?.addEventListener('click', () => connectWallet());
+document.getElementById('btn-disconnect-wallet')?.addEventListener('click', () => disconnectWallet());
+document.getElementById('btn-change-wallet')?.addEventListener('click', () => connectWallet());
+document.getElementById('wallet-modal-cancel')?.addEventListener('click', closeWalletModal);
+document.getElementById('wallet-modal-backdrop')?.addEventListener('click', closeWalletModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const m = document.getElementById('wallet-modal');
+  if (m && !m.hidden) closeWalletModal();
+});

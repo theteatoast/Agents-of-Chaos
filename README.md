@@ -6,6 +6,8 @@ The simulation runs in the database: credits, food, energy, and tick-by-tick cha
 
 The API **indexes** on-chain trades into Postgres; it does not custody user funds. Off-chain `POST /markets/trade` (DB-only, unverified) is **disabled by default** — production flow is **wallet → contract → `POST /markets/trade/confirm`**.
 
+**Money at risk:** Parimutuel betting uses **real USDC on Base**. If you bet on the **wrong** agent, you can **lose the full net amount** you staked on that outcome. If you bet on the **right** agent, your profit depends on pool size and how many others picked the same winner — see [How payouts work](#how-payouts-work-profit-loss-risk) and [After betting closes](#after-betting-closes-resolution-and-payouts).
+
 ---
 
 ## Table of contents
@@ -21,11 +23,12 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 6. [Database](#database)
 7. [API reference](#api-reference)
 8. [Frontend (wallet flow)](#frontend-wallet-flow)
-9. [Economics & fees](#economics--fees)
-10. [Resolution & claims](#resolution--claims)
-11. [Security & operations](#security--operations)
-12. [Troubleshooting](#troubleshooting)
-13. [Scripts](#scripts)
+9. [How payouts work (profit, loss, risk)](#how-payouts-work-profit-loss-risk)
+10. [Economics & fees (parimutuel)](#economics--fees-parimutuel)
+11. [After betting closes: resolution and payouts](#after-betting-closes-resolution-and-payouts)
+12. [Security & operations](#security--operations)
+13. [Troubleshooting](#troubleshooting)
+14. [Scripts](#scripts)
 
 ---
 
@@ -261,45 +264,62 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `POST` | `/markets/trade/confirm` | **Production:** `{ txHash }` — index from chain |
 | `GET` | `/markets/fees/daily` | Aggregated protocol fee rows |
 | `GET` | `/positions/:walletAddress` | Positions + marks / PnL helpers |
-| `POST` | `/positions/:walletAddress/claim` | **DB bookkeeping** payout after resolution (not on-chain redemption) |
+| `POST` | `/positions/:walletAddress/claim` | **Not implemented for USDC:** returns an error directing you to call **`ChaosParimutuelMarket.claim(marketId)`** on Base after the owner resolves — this API never sends USDC |
 
 ---
 
 ## Frontend (wallet flow)
 
 - Loads **ethers** (UMD) + contract ABI from **`/markets/abi`**.
+- **Wallet connect (EIP-6963):** If multiple extensions are installed (e.g. MetaMask + Rabby), the UI lists them so you pick which provider to use. **Disconnect** clears the selected provider and session UI; use **Switch** to choose another wallet.
 - **`tradeLocked` / `quoteLocked`** — disables actions while a request or tx is in flight.
-- **Chain switch** — prompts to Base if needed.
-- **Buy:** `minOut` from quote’s **`min_out_suggested`** (~1.5% vs expected shares). **USDC `approve`** requests only the **exact trade amount** (not unlimited), so wallets like Rabby show a normal number instead of a huge “max” allowance.
-- **Sell:** `minOut` from **`min_out_suggested`** (USDC to user after fees, with cushion).
-- After mining: **`POST /markets/trade/confirm`** with real `txHash`.
+- **Chain switch** — prompts to **Base** if needed (`BASE_CHAIN_ID` / config).
+- **Parimutuel bet flow:** Pick market → agent outcome → USDC amount → quote via **`POST /markets/quote`** (or UI preview) → optional **`POST /markets/:id/simulate-bet`** for gas estimate → **USDC `approve`** (exact amount, not unlimited) → **`bet(marketId, outcomeIndex, grossUsdc)`** on the contract → **`POST /markets/trade/confirm`** with `{ txHash }` so the server indexes **`BetPlaced`**.
 - **`api()`** — failed HTTP responses surface as `{ error }` so the UI does not silently succeed.
 
 ---
 
-## Economics & fees
+## How payouts work (profit, loss, risk)
 
-- **Parimutuel** per market: one **shared USDC pool**; **`bet`** adds net stake after fee; **`resolveMarket`** + **`claim`** pay winners pro-rata (see `ChaosParimutuelMarket.sol`).
-- **Fee on gross:** `fee = gross * feeBps / 10000`, `net = gross - fee` — **`net` is what enters the curve** for both buys and sells.
-- **Buys:** Protocol takes fee on gross from the user’s USDC; user receives **shares** subject to slippage `minOut`.
-- **Sells:** After the curve produces **USDC out**, the contract applies a **second fee on proceeds**; user receives **`usdcToUser`** (also exposed on the **`Trade`** event for indexing).
-- **Quotes:** `POST /markets/quote` mirrors this logic; `min_out_suggested` is used as the UI’s **`minOut`** for both sides.
+This is a **parimutuel** market, not an order book or CPMM: **all losing stakes fund the winners** (after the protocol fee is taken).
+
+| Situation | What happens to your USDC |
+|-----------|---------------------------|
+| **You bet on the winning agent** | After on-chain **`resolveMarket`**, you call **`claim(marketId)`**. Your payout is **pro-rata** from the **entire net pool** \(P\) based on your **net stake** \(s\) on the winning outcome vs total net stake on that outcome \(W\): **`payout = s × P ÷ W`** (see contract; snapshots are fixed at resolve). You can **multiply your money** vs your stake if few others picked the winner and the pool is large — or earn **less than you put in** if many people shared the winning side. |
+| **You bet on a losing agent** | You **do not** get a refund. Your **net stake** stays in the pool and is **distributed to winners** (it is not “burned” to nowhere — it pays the other side). From your perspective you can **lose 100%** of the net amount you staked on that outcome. |
+| **Protocol fee** | Taken from **each bet’s gross** USDC and sent to **`treasury`** on-chain. That fee **never** enters the winner’s pool — factor it in when sizing bets. |
+| **Operational risk** | If the contract owner never calls **`resolveMarket`**, or resolves the **wrong outcome index**, on-chain settlement won’t match what you expect. **Runners** should align **DB winner** (richest agent) with the **outcome index** passed to **`resolveMarket`**. |
+| **Edge case** | On-chain **`resolveMarket` reverts** if **no net stake** sits on the winning outcome \(`W = 0`\). Don’t resolve to an outcome nobody bet on. |
+
+**Agents’ in-game “credits” are not USDC.** Only your **Base USDC** in the betting contract is at stake.
 
 ---
 
-## Resolution & claims
+## Economics & fees (parimutuel)
 
-- **`betting_closes_at`:** After this time (server DB clock), new trades are rejected by the API quote path; on-chain, the contract uses its **`closeTime`** — keep them aligned.
-- **Winner:** The agent with the **most credits** in the economy at resolution — from the latest **`tick_snapshots`** row, fallback **`agents.credits`**. That’s the outcome your bet resolves against.
-- **Background:** `server.js` runs **`resolveMarketsByDeadline()`** every ~5s for open markets past `betting_closes_at`.
-- **`POST /positions/.../claim`:** Clears winning **position shares** in DB and returns a **notional `payoutUsdc`** — **bookkeeping / demo**; **not** automatic on-chain redemption of pool USDC. Wire a contract `claim` / admin process if you need real settlement.
+- **Single pool per market:** Every bet moves **`grossUsdc`** from the user; **`fee = gross × feeBps / 10_000`** to **`treasury`**; **`net = gross − fee`** increases **`totalStakeOnOutcome`** and **`totalPool`**.
+- **No AMM curve, no `minOut` slippage** on the contract — the quote API may still expose `min_out_suggested: 0` / `min_out_kind: 'none'` for compatibility.
+- **Implied “odds”** in the UI are **informational** (share of the pool if that outcome wins); they change as others bet.
+
+---
+
+## After betting closes: resolution and payouts
+
+1. **Betting window ends** — After **`closeTime`** (on-chain) and **`betting_closes_at`** (API), **new `bet()` calls revert** (`TradingClosed`). Keep DB and contract times aligned when registering markets.
+2. **Who wins?** The **richest agent** in the **simulated economy** (by sandbox credits) determines the **winning outcome**: the outcome row tied to that **`agent_id`** (index = position in **`ORDER BY market_outcomes.id`**).
+3. **Database resolution (automatic)** — `server.js` calls **`resolveMarketsByDeadline()`** about every **5 seconds**. For markets past **`betting_closes_at`**, it sets **`prediction_markets.status = RESOLVED`** and **`winning_agent_id`** from the latest **`tick_snapshots.richest_agent_id`** (fallback: top **`agents.credits`**). This is **off-chain bookkeeping** for the app UI — **it does not move USDC**.
+4. **On-chain resolution (owner, manual)** — Someone with the **owner key** must still call **`resolveMarket(marketId, winningOutcomeIndex)`** on **`ChaosParimutuelMarket`**. Use **`npm run resolve:market -- <marketId> <index>`** or your own script. This **locks** **`resolvedPoolSnapshot`** and **`resolvedWinningStakeSnapshot`** used for payouts.
+5. **Claiming USDC (bettors)** — Each winner calls **`claim(marketId)`** from their wallet. USDC is **transferred from the contract**; the server does **not** custody funds.
+6. **Where the money goes** — **Losers’ net stakes** are effectively **paid to winners** through the shared pool formula; **fees** already went to **treasury** on each bet.
+
+**Important:** The simulated economy **keeps ticking** after betting closes. The **DB auto-resolution** snapshots “richest at deadline”; your operational process should still ensure the **on-chain `winningOutcomeIndex`** matches the outcome you advertise (re-run **`resolve:market`** if you coordinate resolution after a specific tick).
 
 ---
 
 ## Security & operations
 
 - **Treat as real DeFi** if there is material TVL: **professional audit**, **testnet drills**, **multisig owner**, monitored **`pause()`**, key hygiene.
-- **Owner powers:** `registerMarket`, `pause` / `unpause`, `setTreasury`, pull seed USDC via `registerMarket` (user must **approve** first).
+- **Owner powers:** `registerMarket` (metadata only — **no** USDC from owner), `resolveMarket`, `pause` / `unpause`, `setTreasury`.
 - **Do not** enable **`ALLOW_UNVERIFIED_TRADES`** in production.
 - Set a strong **`ADMIN_API_KEY`** so only you can start/stop the simulation, create markets via API, or use unverified DB trades. Never commit it; never expose it in frontend bundles (the UI only stores it in **sessionStorage** after you type it for start/stop).
 - **Confirm endpoint** is rate-limited; for heavy traffic consider Redis or a gateway limiter.
@@ -315,6 +335,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `No Trade event in this receipt` | Wrong contract, wrong chain, or tx not a `trade()` call |
 | `chainId mismatch` | `BASE_RPC_URL` points to wrong network vs `BASE_CHAIN_ID` |
 | Unique violation on `tx_hash` | Expected on replay — confirm is idempotent |
+| `resolveMarket` reverts `NoWinningStake` | On-chain total net stake on the winning outcome is **zero** — pick an outcome index that has bets, or don’t resolve until someone stakes on the winner |
 | `403` / admin on simulation | Set `ADMIN_API_KEY` on the server; use same value in the dashboard prompt or `Authorization` header |
 | Hardhat “stack too deep” | `viaIR: true` is already set in `hardhat.config.cjs` |
 | `Nothing to compile` from Hardhat | Normal if you didn’t change `.sol` files; artifacts in `contracts/artifacts` are current. Use `npm run compile:contracts:force` to rebuild anyway |
@@ -335,6 +356,9 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `npm run seed` | Seed agents + default market |
 | `npm run compile:contracts` | `hardhat compile` (prints **Nothing to compile** when artifacts are already up to date — that’s OK) |
 | `npm run compile:contracts:force` | Full recompile: `hardhat compile --force` |
+| `npm run deploy:contract` | Deploy `ChaosParimutuelMarket` to Base (needs `DEPLOYER_PRIVATE_KEY` + ETH for gas) |
+| `npm run register:market -- <marketId>` | Owner: `registerMarket` from DB row (gas only) |
+| `npm run resolve:market -- <marketId> <winningOutcomeIndex>` | Owner: `resolveMarket` on-chain |
 
 ---
 
