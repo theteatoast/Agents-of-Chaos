@@ -230,7 +230,7 @@ function disconnectWallet() {
   cachedPositions = [];
 }
 
-// Chart.js — dark dashboard defaults
+// Chart.js - dark dashboard defaults
 Chart.defaults.color = '#9aa4b2';
 Chart.defaults.borderColor = '#252b34';
 Chart.defaults.font.family = "'DM Sans', sans-serif";
@@ -651,10 +651,10 @@ async function loadTransparency() {
       ? `<a href="${t.explorer_base}/address/${t.protocol_treasury}" target="_blank" rel="noopener noreferrer">${t.protocol_treasury}</a>`
       : 'Not configured (set PROTOCOL_TREASURY_ADDRESS)';
     el.innerHTML = `
-      <p class="transparency-pitch">Agents are dropped into an economy — they earn, trade, scam, or starve. <strong>You</strong> bet on <strong>which agent ends richest</strong> (USDC on Base).</p>
+      <p class="transparency-pitch">Agents are dropped into an economy - they earn, trade, scam, or starve. <strong>You</strong> bet on <strong>which agent ends richest</strong> (USDC on Base).</p>
       <ul class="transparency-list">
         <li><strong>Chain:</strong> Base (chain ID ${t.chain_id}) · <strong>USDC:</strong> <a href="${t.explorer_base}/address/${t.usdc_contract}" target="_blank" rel="noopener noreferrer">${t.usdc_contract}</a></li>
-        <li><strong>Protocol fee:</strong> ${t.protocol_fee_percent}% (${t.protocol_fee_bps} bps) per trade — revenue to treasury: ${treasury}</li>
+        <li><strong>Protocol fee:</strong> ${t.protocol_fee_percent}% (${t.protocol_fee_bps} bps) per trade - revenue to treasury: ${treasury}</li>
         <li><strong>Economy vs bets:</strong> Agent credits are the in-game score (not cash). USDC is only for betting on who wins that race.</li>
       </ul>
       <ul class="transparency-rules">
@@ -698,7 +698,7 @@ function updatePmMarketHeader() {
   const m = cachedMarkets.find((x) => x.id === id);
   if (!m) {
     line.textContent = 'Select a market';
-    closeLine.textContent = '—';
+    closeLine.textContent = '-';
     return;
   }
   line.textContent = (m.title || `Market #${m.id}`).slice(0, 72);
@@ -721,7 +721,7 @@ function updatePoolShareHint() {
   const o = getSelectedOutcome();
   const nAgents = marketOutcomes.length || 1;
   if (!o) {
-    line.textContent = '—';
+    line.textContent = '-';
     if (sub) sub.textContent = '';
     return;
   }
@@ -731,7 +731,7 @@ function updatePoolShareHint() {
   line.textContent = `~${pct}% of pool if this agent wins`;
   if (sub) {
     if (poolTotal <= 0.000001) {
-      sub.textContent = `No bets yet · equal baseline 1/${nAgents} each (${nAgents} agents) — not USDC odds`;
+      sub.textContent = `No bets yet · equal baseline 1/${nAgents} each (${nAgents} agents) - not USDC odds`;
     } else {
       sub.textContent = `Pool ≈ $${poolTotal.toFixed(2)} USDC on-chain (indexed)`;
     }
@@ -744,7 +744,7 @@ function setBetMode(mode) {
   document.getElementById('tab-buy')?.setAttribute('aria-selected', String(mode === 'buy'));
 }
 
-/** Parimutuel: single bet type — stake on selected agent (outcome). */
+/** Parimutuel: single bet type - stake on selected agent (outcome). */
 function getSideKey() {
   return 'BET';
 }
@@ -794,7 +794,7 @@ function updateMarketMetaAndCountdown() {
   if (closes && m.status === 'OPEN') {
     row.hidden = false;
     const left = closes.getTime() - Date.now();
-    val.textContent = left > 0 ? formatDuration(left) : 'Closed — resolving';
+    val.textContent = left > 0 ? formatDuration(left) : 'Closed - resolving';
   } else {
     row.hidden = true;
   }
@@ -969,7 +969,7 @@ async function applyAmountMax() {
 async function ensureWalletOnChain(eth, cfg) {
   if (!cfg?.chain_id) throw new Error('Server config missing chain_id');
   const eip = getEip1193Provider();
-  if (!eip) throw new Error('No wallet — connect a wallet first');
+  if (!eip) throw new Error('No wallet - connect a wallet first');
   const want = BigInt(cfg.chain_id);
   let provider = new eth.BrowserProvider(eip);
   let net = await provider.getNetwork();
@@ -1022,7 +1022,7 @@ async function exitStakePosition(marketId, outcomeIndex) {
   const m = cachedMarkets.find((x) => x.id === mid);
   if (!m || m.status !== 'OPEN' || !m.trading_open) {
     alert(
-      'Betting is closed for this market. You cannot exit on-chain anymore — if the market resolved and you won, claim USDC with claim(marketId) on the contract.'
+      'Betting is closed for this market. You cannot exit on-chain anymore - if the market resolved and you won, claim USDC with claim(marketId) on the contract.'
     );
     return;
   }
@@ -1030,7 +1030,7 @@ async function exitStakePosition(marketId, outcomeIndex) {
   tradeLocked = true;
   try {
     const eth = getEthers();
-    if (!getEip1193Provider()) throw new Error('No wallet — connect a wallet first');
+    if (!getEip1193Provider()) throw new Error('No wallet - connect a wallet first');
 
     let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
     if (!cfg) {
@@ -1046,7 +1046,7 @@ async function exitStakePosition(marketId, outcomeIndex) {
     const provider = await ensureWalletOnChain(eth, cfg);
     const signer = await provider.getSigner();
     const user = (await signer.getAddress()).toLowerCase();
-    if (user !== connectedWallet) throw new Error('Connected wallet mismatch — reconnect.');
+    if (user !== connectedWallet) throw new Error('Connected wallet mismatch - reconnect.');
 
     const abiRes = await api('/markets/abi');
     if (abiRes.error || !abiRes.abi) throw new Error(abiRes.error || 'Contract ABI not available');
@@ -1098,7 +1098,7 @@ async function exitStakePosition(marketId, outcomeIndex) {
     });
     if (confirm.error) throw new Error(confirm.error);
 
-    alert('Stake exited — USDC returned to your wallet (check wallet balance; you still pay gas in ETH).');
+    alert('Stake exited - USDC returned to your wallet (check wallet balance; you still pay gas in ETH).');
     await loadPositions();
     await loadMarkets();
   } catch (e) {
@@ -1122,7 +1122,7 @@ async function claimWinnings(marketId) {
   tradeLocked = true;
   try {
     const eth = getEthers();
-    if (!getEip1193Provider()) throw new Error('No wallet — connect a wallet first');
+    if (!getEip1193Provider()) throw new Error('No wallet - connect a wallet first');
 
     let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
     if (!cfg) {
@@ -1136,7 +1136,7 @@ async function claimWinnings(marketId) {
     const provider = await ensureWalletOnChain(eth, cfg);
     const signer = await provider.getSigner();
     const user = (await signer.getAddress()).toLowerCase();
-    if (user !== connectedWallet) throw new Error('Wallet mismatch — reconnect.');
+    if (user !== connectedWallet) throw new Error('Wallet mismatch - reconnect.');
 
     const pre = await api(`/markets/${mid}/claim-precheck?wallet=${encodeURIComponent(user)}`);
     if (pre.error) throw new Error(pre.error);
@@ -1144,7 +1144,7 @@ async function claimWinnings(marketId) {
     if (!pc?.can_claim) {
       throw new Error(
         pc?.reason === 'not_resolved'
-          ? 'Market is not resolved on-chain yet — the contract owner must call resolveMarket first.'
+          ? 'Market is not resolved on-chain yet - the contract owner must call resolveMarket first.'
           : 'Nothing to claim for this wallet on this market (wrong outcome, already claimed, or no stake).'
       );
     }
@@ -1200,7 +1200,7 @@ async function claimWinnings(marketId) {
     if (confirm.error) throw new Error(confirm.error);
 
     const est = pc.estimated_payout_usdc ? ` ~${Number(pc.estimated_payout_usdc).toFixed(4)} USDC` : '';
-    alert(`Claim confirmed — USDC sent to your wallet${est} (minus gas).`);
+    alert(`Claim confirmed - USDC sent to your wallet${est} (minus gas).`);
     await loadPositions();
     await loadMarkets();
   } catch (e) {
@@ -1226,7 +1226,7 @@ async function placeTrade() {
       'Server has no PREDICTION_MARKET_CONTRACT_ADDRESS.\n\n' +
         '1) Deploy: npm run deploy:contract\n' +
         '2) Add address to .env and restart\n' +
-        '3) Owner: registerMarket(...) — no USDC seed required (parimutuel)'
+        '3) Owner: registerMarket(...) - no USDC seed required (parimutuel)'
     );
     return;
   }
@@ -1252,13 +1252,13 @@ async function placeTrade() {
 
   const outcome = marketOutcomes.find((o) => o.id === outcomeId);
   if (!outcome || outcome.outcome_index == null) {
-    alert('Outcome not loaded — refresh and try again.');
+    alert('Outcome not loaded - refresh and try again.');
     return;
   }
 
   const outcomeIndex = Number(outcome.outcome_index);
   if (!Number.isFinite(outcomeIndex) || outcomeIndex < 0) {
-    alert('Invalid outcome — refresh and pick an agent.');
+    alert('Invalid outcome - refresh and pick an agent.');
     return;
   }
 
@@ -1268,7 +1268,7 @@ async function placeTrade() {
 
   try {
     const eth = getEthers();
-    if (!getEip1193Provider()) throw new Error('No wallet — connect a wallet first');
+    if (!getEip1193Provider()) throw new Error('No wallet - connect a wallet first');
 
     let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
     if (!cfg) {
@@ -1285,7 +1285,7 @@ async function placeTrade() {
     const signer = await provider.getSigner();
     const user = (await signer.getAddress()).toLowerCase();
     if (user !== connectedWallet) {
-      throw new Error('Connected wallet mismatch — reconnect.');
+      throw new Error('Connected wallet mismatch - reconnect.');
     }
 
     const gross = eth.parseUnits(String(usdcAmount), 6);
@@ -1322,7 +1322,7 @@ async function placeTrade() {
     if (outcomeIndex >= pre.outcomeCount) {
       throw new Error(
         `This agent’s index (${outcomeIndex}) is not valid on-chain (outcomeCount=${pre.outcomeCount}). ` +
-          `The contract may have been registered with fewer outcomes than your database — re-run: npm run register:market -- ${marketId}`
+          `The contract may have been registered with fewer outcomes than your database - re-run: npm run register:market -- ${marketId}`
       );
     }
 
@@ -1364,7 +1364,7 @@ async function placeTrade() {
     if (sim.error) {
       throw new Error(
         sim.error +
-          '\n\n(This dry-run uses the same rules as the chain — fix the issue above before trying the wallet again.)'
+          '\n\n(This dry-run uses the same rules as the chain - fix the issue above before trying the wallet again.)'
       );
     }
 
@@ -1390,7 +1390,7 @@ async function placeTrade() {
           'Could not submit the transaction (gas estimate / RPC returned no revert data).\n' +
             '• Confirm the wallet is on Base and you have enough ETH for gas.\n' +
             '• Cancel any stuck pending tx, refresh, try again.\n' +
-            '• Open BaseScan → paste your wallet / contract — compare with server simulate-bet (already passed).\n\n' +
+            '• Open BaseScan → paste your wallet / contract - compare with server simulate-bet (already passed).\n\n' +
             betMsg
         );
       }
@@ -1450,7 +1450,7 @@ function renderPositionsTable(positions) {
       Number(p.shares) > 0 &&
       p.winning_agent_id != null &&
       Number(p.agent_id) === Number(p.winning_agent_id);
-    let actionCell = '<span class="positions-action-muted">—</span>';
+    let actionCell = '<span class="positions-action-muted">-</span>';
     if (canExit) {
       actionCell = `<button type="button" class="pm-exit-stake" onclick="exitStakePosition(${Number(p.market_id)}, ${Number(p.outcome_index)})">Exit stake</button>`;
     } else if (canClaim) {

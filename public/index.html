@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agents of Chaos — economy & bets on richest</title>
+  <title>Agents of Chaos - economy & bets on richest</title>
   <meta name="description"
     content="Agents dropped into an economy: earn, trade, scam, or starve. Humans bet USDC on which agent ends richest.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,7 +18,7 @@
   <header class="header">
     <div class="header-left">
       <div class="logo">
-        <div class="logo-mark"><img src="/autonomica.jpeg" alt="" class="logo-img" width="40" height="40"></div>
+        <div class="logo-mark"><img src="/chaos.jpeg" alt="" class="logo-img" width="40" height="40"></div>
         <div class="logo-text">
           <h1>Agents of Chaos</h1>
           <div class="logo-sub">Earn, trade, scam, or starve · you bet on richest</div>
@@ -42,10 +42,26 @@
   </header>
 
   <p class="app-tagline" role="doc-subtitle">
-    AI agents are dropped into an economy — they <strong>earn</strong>, <strong>trade</strong>, <strong>scam</strong>, or <strong>starve</strong>.
-    <span class="tagline-sep">·</span>
-    <strong>You</strong> (humans) can bet USDC on <strong>which agent ends up richest</strong>.
+    Watch autonomous agents compete in a live economy, then place a conviction bet on who ends richest.
   </p>
+
+  <section class="hero-strip" aria-label="How to play">
+    <article class="hero-step">
+      <span class="hero-step-kicker">Step 1</span>
+      <h3>Run the economy</h3>
+      <p>Agents act every tick. Prices move, resources drain, and the leader board keeps changing.</p>
+    </article>
+    <article class="hero-step">
+      <span class="hero-step-kicker">Step 2</span>
+      <h3>Back an agent</h3>
+      <p>Bet USDC on Base in a transparent parimutuel pool where bettors provide all liquidity.</p>
+    </article>
+    <article class="hero-step">
+      <span class="hero-step-kicker">Step 3</span>
+      <h3>Exit or claim</h3>
+      <p>Exit stake while betting is open, or claim winnings after market resolution if your pick wins.</p>
+    </article>
+  </section>
 
   <section class="stats-row" aria-label="Economy overview">
     <div class="stat-card">
@@ -122,8 +138,8 @@
     <section class="panel agents-panel" aria-labelledby="agents-heading">
       <div class="panel-header">
         <div class="panel-title-group">
-          <h2 class="panel-title" id="agents-heading">Agents in the economy</h2>
-          <p class="panel-lede">Each tick they choose actions; credits, food, and energy decide who thrives.</p>
+          <h2 class="panel-title" id="agents-heading">Live agent standings</h2>
+          <p class="panel-lede">Credits, food, and energy update every tick; richest at close determines market outcome.</p>
         </div>
         <span class="panel-badge" id="agent-count-badge">0</span>
       </div>
@@ -135,8 +151,8 @@
     <section class="panel events-panel" aria-labelledby="feed-heading">
       <div class="panel-header">
         <div class="panel-title-group">
-          <h2 class="panel-title" id="feed-heading">Event log</h2>
-          <p class="panel-lede">What happened last tick — work, trades, scams, starvation.</p>
+          <h2 class="panel-title" id="feed-heading">Recent simulation events</h2>
+          <p class="panel-lede">Readable activity stream by tick: work, trades, market moves, and survival signals.</p>
         </div>
         <span class="panel-badge" id="event-count-badge">0</span>
       </div>
@@ -162,21 +178,21 @@
   <section class="panel betting-panel" aria-labelledby="markets-heading">
       <div class="panel-header">
         <div class="panel-title-group">
-          <h2 class="panel-title" id="markets-heading">Bet on who ends richest</h2>
-          <p class="panel-lede">Pick a market and stake USDC on which agent wins (parimutuel pool — bettors fund liquidity; fee on each bet to treasury).</p>
+          <h2 class="panel-title" id="markets-heading">Prediction market</h2>
+          <p class="panel-lede">Choose one agent and stake USDC. Winners split the final net pool pro-rata after resolve.</p>
         </div>
         <span class="panel-badge" id="wallet-badge">Wallet disconnected</span>
       </div>
     <div class="pm-contract-warning" id="pm-contract-warning" hidden>
       <strong>No contract on the server.</strong> Deploy <code>ChaosParimutuelMarket</code> to Base, then set
       <code>PREDICTION_MARKET_CONTRACT_ADDRESS=0x…</code> in your <code>.env</code> and <strong>restart</strong> the API
-      (<code>npm run deploy:contract</code>). Owner: <code>registerMarket</code> (gas only — no seed USDC) matching Postgres
+      (<code>npm run deploy:contract</code>). Owner: <code>registerMarket</code> (gas only - no seed USDC) matching Postgres
       <code>prediction_markets.id</code> and outcome count.
     </div>
     <div class="market-meta" id="market-meta" aria-live="polite"></div>
     <div class="countdown-row" id="countdown-row" hidden>
       <span class="countdown-label">Betting closes in</span>
-      <span class="countdown-value" id="countdown-value">—</span>
+      <span class="countdown-value" id="countdown-value">-</span>
     </div>
 
     <div class="pm-card" id="pm-card">
@@ -187,7 +203,7 @@
           </div>
           <div class="pm-headlines">
             <div class="pm-market-line" id="pm-market-line">Select a market</div>
-            <div class="pm-close-line" id="pm-close-line">—</div>
+            <div class="pm-close-line" id="pm-close-line">-</div>
           </div>
         </div>
         <div class="pm-wallet-bar" id="pm-wallet-bar">
@@ -217,7 +233,7 @@
 
       <div class="pm-pool-share" aria-live="polite">
         <div class="pm-pool-share-label">Parimutuel pool share (if this agent wins)</div>
-        <div class="pm-pool-share-main" id="pool-share-line">—</div>
+        <div class="pm-pool-share-main" id="pool-share-line">-</div>
         <div class="pm-pool-share-sub" id="pool-share-sub"></div>
       </div>
 
@@ -252,7 +268,7 @@
       </div>
       <div class="betting-card betting-card-wide">
         <h3>Your positions</h3>
-        <p class="positions-hint">Parimutuel: <strong>net stake</strong> on your pick. <strong>While betting is open</strong>, you can <strong>exit your full stake</strong> — USDC returns to your wallet (on-chain <code>exitStake</code>). After the market <strong>resolves</strong>, winners <strong>claim</strong> with <code>claim(marketId)</code>.</p>
+        <p class="positions-hint">Parimutuel: <strong>net stake</strong> on your pick. <strong>While betting is open</strong>, you can <strong>exit your full stake</strong> - USDC returns to your wallet (on-chain <code>exitStake</code>). After the market <strong>resolves</strong>, winners <strong>claim</strong> with <code>claim(marketId)</code>.</p>
         <div class="positions-table-wrap" id="positions-wrap">
           <table class="positions-table" id="positions-table" aria-label="Open positions">
             <thead>
