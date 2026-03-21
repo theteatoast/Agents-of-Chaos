@@ -1109,6 +1109,108 @@ async function exitStakePosition(marketId, outcomeIndex) {
   }
 }
 
+/** After owner resolves on-chain: claim USDC for this market (winning outcome only). */
+async function claimWinnings(marketId) {
+  if (tradeLocked) return;
+  if (!connectedWallet) {
+    alert('Connect wallet first');
+    return;
+  }
+  const mid = Number(marketId);
+  if (!Number.isFinite(mid) || mid < 1) return;
+
+  tradeLocked = true;
+  try {
+    const eth = getEthers();
+    if (!getEip1193Provider()) throw new Error('No wallet — connect a wallet first');
+
+    let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
+    if (!cfg) {
+      const c = await api('/markets/config');
+      if (c.error) throw new Error(c.error);
+      cfg = c;
+      marketConfig = c;
+    }
+    if (!cfg.prediction_market_contract) throw new Error('No prediction market contract on server.');
+
+    const provider = await ensureWalletOnChain(eth, cfg);
+    const signer = await provider.getSigner();
+    const user = (await signer.getAddress()).toLowerCase();
+    if (user !== connectedWallet) throw new Error('Wallet mismatch — reconnect.');
+
+    const pre = await api(`/markets/${mid}/claim-precheck?wallet=${encodeURIComponent(user)}`);
+    if (pre.error) throw new Error(pre.error);
+    const pc = pre.precheck;
+    if (!pc?.can_claim) {
+      throw new Error(
+        pc?.reason === 'not_resolved'
+          ? 'Market is not resolved on-chain yet — the contract owner must call resolveMarket first.'
+          : 'Nothing to claim for this wallet on this market (wrong outcome, already claimed, or no stake).'
+      );
+    }
+
+    const sim = await api(`/markets/${mid}/simulate-claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wallet: user }),
+    });
+    if (sim.error) throw new Error(sim.error);
+
+    let claimOverrides = undefined;
+    if (sim.gas_limit) {
+      const raw = BigInt(sim.gas_limit);
+      const withHeadroom = (raw * 125n) / 100n;
+      const cap = 5000000n;
+      claimOverrides = { gasLimit: withHeadroom > cap ? cap : withHeadroom };
+    }
+
+    const abiRes = await api('/markets/abi');
+    if (abiRes.error || !abiRes.abi) throw new Error(abiRes.error || 'ABI');
+    const marketContract = new eth.Contract(cfg.prediction_market_contract, abiRes.abi, signer);
+
+    let tx;
+    try {
+      tx = claimOverrides
+        ? await marketContract.claim(mid, claimOverrides)
+        : await marketContract.claim(mid);
+    } catch (err) {
+      const msg = String(err?.message || err?.shortMessage || err || '');
+      if (/missing revert data|CALL_EXCEPTION/i.test(msg)) {
+        throw new Error(
+          'claim() failed. Confirm the market is resolved on-chain and you have stake on the winning outcome.\n\n' +
+            msg
+        );
+      }
+      throw err;
+    }
+    const receipt = await tx.wait();
+    const st = receipt?.status;
+    const ok =
+      st === 1 ||
+      st === 1n ||
+      (typeof st === 'string' && st === '0x1') ||
+      Number(st) === 1;
+    if (!ok) throw new Error('Transaction reverted on-chain.');
+
+    const confirm = await api('/markets/trade/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txHash: receipt.hash }),
+    });
+    if (confirm.error) throw new Error(confirm.error);
+
+    const est = pc.estimated_payout_usdc ? ` ~${Number(pc.estimated_payout_usdc).toFixed(4)} USDC` : '';
+    alert(`Claim confirmed — USDC sent to your wallet${est} (minus gas).`);
+    await loadPositions();
+    await loadMarkets();
+  } catch (e) {
+    console.error(e);
+    alert(e?.reason || e?.message || e?.shortMessage || String(e));
+  } finally {
+    tradeLocked = false;
+  }
+}
+
 async function placeTrade() {
   if (tradeLocked) return;
   if (betMode !== 'buy') {
@@ -1343,9 +1445,17 @@ function renderPositionsTable(positions) {
       p.trading_open === true &&
       Number(p.shares) > 0 &&
       Number(p.outcome_index) >= 0;
-    const exitCell = canExit
-      ? `<button type="button" class="pm-exit-stake" onclick="exitStakePosition(${Number(p.market_id)}, ${Number(p.outcome_index)})">Exit stake</button>`
-      : '<span class="positions-action-muted">—</span>';
+    const canClaim =
+      p.status === 'RESOLVED' &&
+      Number(p.shares) > 0 &&
+      p.winning_agent_id != null &&
+      Number(p.agent_id) === Number(p.winning_agent_id);
+    let actionCell = '<span class="positions-action-muted">—</span>';
+    if (canExit) {
+      actionCell = `<button type="button" class="pm-exit-stake" onclick="exitStakePosition(${Number(p.market_id)}, ${Number(p.outcome_index)})">Exit stake</button>`;
+    } else if (canClaim) {
+      actionCell = `<button type="button" class="pm-claim-winnings" onclick="claimWinnings(${Number(p.market_id)})">Claim winnings</button>`;
+    }
     return `<tr>
       <td>${title}</td>
       <td>${agent}</td>
@@ -1354,7 +1464,7 @@ function renderPositionsTable(positions) {
       <td class="mono">${Number(p.estimated_mark_value_usdc).toFixed(4)}</td>
       <td class="mono ${unrealClass}">${unreal.toFixed(4)}</td>
       <td>${escapeHtml(p.status || '')}</td>
-      <td class="positions-action-cell">${exitCell}</td>
+      <td class="positions-action-cell">${actionCell}</td>
     </tr>`;
   }).join('');
 }
@@ -1413,6 +1523,7 @@ window.disconnectWallet = disconnectWallet;
 window.previewTrade = previewTrade;
 window.placeTrade = placeTrade;
 window.exitStakePosition = exitStakePosition;
+window.claimWinnings = claimWinnings;
 window.loadPositions = loadPositions;
 
 document.getElementById('btn-connect-wallet')?.addEventListener('click', () => connectWallet());

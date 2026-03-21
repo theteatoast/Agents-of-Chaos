@@ -72,7 +72,7 @@ async function withRpcFallback(fn) {
 }
 
 /**
- * Parse a mined tx: either `BetPlaced` (bet) or `StakeExited` (early exit / "sell" before close).
+ * Parse a mined tx: `BetPlaced`, `StakeExited`, or `Claimed`.
  */
 export async function fetchParimutuelEventFromTx(txHash) {
     loadArtifact();
@@ -95,6 +95,10 @@ export async function fetchParimutuelEventFromTx(txHash) {
         const contractAddr = config.predictionMarketContractAddress.toLowerCase();
         const betTopic = iface.getEvent('BetPlaced').topicHash;
         const exitTopic = iface.getEvent('StakeExited').topicHash;
+        const claimTopic = iface.getEvent('Claimed').topicHash;
+        const claimLog = receipt.logs.find(
+            (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === claimTopic
+        );
         const exitLog = receipt.logs.find(
             (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === exitTopic
         );
@@ -102,6 +106,16 @@ export async function fetchParimutuelEventFromTx(txHash) {
             (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === betTopic
         );
 
+        if (claimLog) {
+            const parsed = iface.parseLog({ topics: claimLog.topics, data: claimLog.data });
+            return {
+                kind: 'claim',
+                user: parsed.args.user,
+                marketId: Number(parsed.args.marketId),
+                outcomeIndex: Number(parsed.args.outcomeIndex),
+                amount: parsed.args.amount,
+            };
+        }
         if (exitLog) {
             const parsed = iface.parseLog({ topics: exitLog.topics, data: exitLog.data });
             return {
@@ -124,7 +138,9 @@ export async function fetchParimutuelEventFromTx(txHash) {
                 netUsdc: parsed.args.netUsdc,
             };
         }
-        throw new Error('No BetPlaced or StakeExited event from the prediction market contract in this receipt');
+        throw new Error(
+            'No BetPlaced, StakeExited, or Claimed event from the prediction market contract in this receipt'
+        );
     });
 }
 
@@ -311,6 +327,98 @@ export async function simulateExitStake(marketId, outcomeIndex, fromAddress) {
         let gas_limit = null;
         try {
             const data = market.interface.encodeFunctionData('exitStake', [mid, oid]);
+            const gas = await provider.estimateGas({ to: contractAddr, from, data });
+            gas_limit = gas.toString();
+        } catch {
+            /* optional */
+        }
+        return { ok: true, gas_limit };
+    });
+}
+
+/**
+ * Read whether `claim(marketId)` will succeed and estimated USDC payout (6 decimals).
+ */
+export async function getClaimPrecheck(marketId, walletAddress) {
+    const contractAddr = config.predictionMarketContractAddress;
+    if (!contractAddr) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const w = String(walletAddress || '').trim().toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(w)) {
+        throw new Error('Invalid wallet address');
+    }
+    const mid = Number(marketId);
+    if (!Number.isFinite(mid) || mid < 1) throw new Error('Invalid marketId');
+
+    const artifact = loadArtifact();
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const c = new ethers.Contract(contractAddr, artifact.abi, provider);
+        const m = await c.markets(mid);
+        if (!m.resolved) {
+            return {
+                can_claim: false,
+                reason: 'not_resolved',
+                resolved: false,
+            };
+        }
+        const winIdx = Number(m.winningOutcome);
+        const stakeRaw = await c.stakeOf(mid, winIdx, w);
+        if (stakeRaw === 0n) {
+            return {
+                can_claim: false,
+                reason: 'nothing_to_claim',
+                resolved: true,
+                winning_outcome_index: winIdx,
+            };
+        }
+        const P = await c.resolvedPoolSnapshot(mid);
+        const W = await c.resolvedWinningStakeSnapshot(mid);
+        if (W === 0n) {
+            return { can_claim: false, reason: 'no_winning_stake_snapshot', resolved: true };
+        }
+        const payoutRaw = (stakeRaw * P) / W;
+        return {
+            can_claim: true,
+            resolved: true,
+            winning_outcome_index: winIdx,
+            stake_net_usdc: ethers.formatUnits(stakeRaw, 6),
+            estimated_payout_usdc: ethers.formatUnits(payoutRaw, 6),
+        };
+    });
+}
+
+/** Dry-run `claim(marketId)` for gas estimate. */
+export async function simulateClaim(marketId, fromAddress) {
+    const contractAddr = config.predictionMarketContractAddress;
+    if (!contractAddr) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const from = String(fromAddress || '').trim().toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(from)) {
+        throw new Error('Invalid wallet address');
+    }
+    const mid = Number(marketId);
+    if (!Number.isFinite(mid) || mid < 1) throw new Error('Invalid marketId');
+
+    const artifact = loadArtifact();
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const market = new ethers.Contract(contractAddr, artifact.abi, provider);
+        await market.claim.staticCall(mid, { from });
+
+        let gas_limit = null;
+        try {
+            const data = market.interface.encodeFunctionData('claim', [mid]);
             const gas = await provider.estimateGas({ to: contractAddr, from, data });
             gas_limit = gas.toString();
         } catch {

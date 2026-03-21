@@ -283,6 +283,9 @@ To **revert uncommitted code** (separate from DB): `git checkout -- .` or `git r
 | `GET` | `/markets/config` | `chain_id`, USDC, contract, fee bps, flags |
 | `GET` | `/markets/abi` | Contract ABI JSON for wallet UI |
 | `GET` | `/markets/:marketId/precheck?wallet=0x…` | Server-side `markets()`, pool, USDC allowance/balance (avoids flaky wallet RPC on reads) |
+| `GET` | `/markets/:marketId/precheck?wallet=…&outcomeIndex=n` | Same + optional **`stake_net_usdc`** on that outcome |
+| `GET` | `/markets/:marketId/claim-precheck?wallet=0x…` | After **`resolveMarket`**: can this wallet **`claim`**, estimated payout |
+| `POST` | `/markets/:marketId/simulate-claim` | Body: `{ wallet }` — dry-run **`claim(marketId)`** + optional `gas_limit` |
 | `POST` | `/markets/:marketId/simulate-bet` | Body: `{ outcomeIndex, gross_smallest, wallet }` — dry-run `bet` + optional `gas_limit` from server `estimateGas` (UI passes it to MetaMask to avoid flaky wallet RPC) |
 | `POST` | `/markets` | Create market + outcomes (**admin key required**) |
 | `GET` | `/markets/:marketId/outcomes` | Outcomes + reserves |

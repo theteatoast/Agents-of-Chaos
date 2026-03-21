@@ -1,6 +1,13 @@
 import config from '../config/index.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
-import { getContractAbi, getBetPrecheck, simulateBet, simulateExitStake } from '../services/chainSync.js';
+import {
+    getContractAbi,
+    getBetPrecheck,
+    simulateBet,
+    simulateExitStake,
+    getClaimPrecheck,
+    simulateClaim,
+} from '../services/chainSync.js';
 import {
     listMarkets,
     createMarket,
@@ -104,6 +111,36 @@ export default async function predictionMarketRoutes(fastify) {
             }
             if (/allowance|ERC20/i.test(msg)) {
                 msg += ' — Approve USDC for the market contract first.';
+            }
+            return reply.code(400).send({ error: msg });
+        }
+    });
+
+    /** After `resolveMarket`, check if wallet can `claim(marketId)` and estimated USDC. */
+    fastify.get('/markets/:marketId/claim-precheck', async (request, reply) => {
+        try {
+            const marketId = Number(request.params.marketId);
+            const wallet = request.query?.wallet || '';
+            const precheck = await getClaimPrecheck(marketId, wallet);
+            return { precheck };
+        } catch (error) {
+            return reply.code(400).send({ error: error.message });
+        }
+    });
+
+    fastify.post('/markets/:marketId/simulate-claim', async (request, reply) => {
+        try {
+            const marketId = Number(request.params.marketId);
+            const { wallet } = request.body || {};
+            const result = await simulateClaim(marketId, String(wallet || ''));
+            return { ok: true, gas_limit: result.gas_limit || null };
+        } catch (error) {
+            let msg = String(error?.shortMessage || error?.reason || error?.message || error);
+            if (/NothingToClaim|nothing/i.test(msg)) {
+                msg += ' — No claimable stake on the winning outcome (already claimed or lost).';
+            }
+            if (/not resolved|BadMarket/i.test(msg)) {
+                msg += ' — Owner must call resolveMarket on-chain first.';
             }
             return reply.code(400).send({ error: msg });
         }

@@ -3,7 +3,7 @@ import pool from '../db/index.js';
 import config from '../config/index.js';
 import { fetchParimutuelEventFromTx, readMarketStakeTotals } from './chainSync.js';
 
-const SIDES = new Set(['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO', 'BET', 'EXIT_STAKE']);
+const SIDES = new Set(['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO', 'BET', 'EXIT_STAKE', 'CLAIM']);
 
 export async function getDbNow() {
     const { rows } = await pool.query(`SELECT NOW() AS now`);
@@ -368,6 +368,27 @@ export async function syncTradeFromTxHash(txHash) {
 
             await client.query('COMMIT');
             return { duplicate: false, trade: tradeInsert.rows[0], kind: 'exit' };
+        }
+
+        if (ev.kind === 'claim') {
+            const payoutUsdc = Number(ethers.formatUnits(ev.amount, 6));
+            if (!Number.isFinite(payoutUsdc) || payoutUsdc < 0) throw new Error('Invalid claim amount');
+
+            await client.query(
+                `DELETE FROM market_positions WHERE wallet_address = $1 AND market_id = $2 AND outcome_id = $3`,
+                [wallet, ev.marketId, outcomeId]
+            );
+
+            const tradeInsert = await client.query(
+                `INSERT INTO market_trades
+                (wallet_address, market_id, outcome_id, side, usdc_amount, shares_delta, avg_price, fee_usdc, tx_hash, block_timestamp)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                RETURNING *`,
+                [wallet, ev.marketId, outcomeId, 'CLAIM', payoutUsdc, payoutUsdc, 1, 0, normalizedHash]
+            );
+
+            await client.query('COMMIT');
+            return { duplicate: false, trade: tradeInsert.rows[0], kind: 'claim' };
         }
 
         throw new Error('Unknown parimutuel event kind');

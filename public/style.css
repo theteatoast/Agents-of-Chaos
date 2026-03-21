@@ -1085,6 +1085,22 @@ body > * {
   color: var(--accent-hover);
 }
 
+.pm-claim-winnings {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--positive);
+  background: var(--positive-bg);
+  color: var(--positive);
+  cursor: pointer;
+  font-family: var(--font);
+}
+
+.pm-claim-winnings:hover {
+  filter: brightness(1.08);
+}
+
 /* === Stats Row === */
 .stats-row {
   display: grid;

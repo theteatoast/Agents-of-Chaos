@@ -48,7 +48,43 @@ Then re-seed or update the row in SQL; re-run **`npm run register:market -- <id>
 
 ---
 
-## 3. After the simulation / betting ends — how money moves (parimutuel)
+## 3. Contract owner: **`resolveMarket`** (who calls it, how)
+
+Only the **contract owner** (the wallet that deployed `ChaosParimutuelMarket`, or a new owner if ownership was transferred) can lock the winner on-chain.
+
+### Step 1 — Get the winning **outcome index**
+
+It must match **`market_outcomes`** order for that market: **0** = first row by `id`, **1** = next, etc. It must be the agent who **won** the sandbox (richest credits) for your rules.
+
+### Step 2 — Call **`resolveMarket(marketId, winningOutcomeIndex)`** on Base
+
+**Option A — from your machine (repo):**
+
+```bash
+# .env: PREDICTION_MARKET_CONTRACT_ADDRESS, DEPLOYER_PRIVATE_KEY (or owner key), BASE_RPC_URL
+npm run resolve:market -- <marketId> <winningOutcomeIndex>
+```
+
+Example: market `3`, winning agent is outcome index `0`:
+
+```bash
+npm run resolve:market -- 3 0
+```
+
+**Option B — BaseScan**
+
+1. Open your contract on [BaseScan](https://basescan.org).  
+2. **Contract** → **Write contract** → connect **owner** wallet.  
+3. Call **`resolveMarket`** with `marketId` and `winningOutcomeIndex` → confirm tx.
+
+### Requirements (on-chain)
+
+- Market is **active** and **not already resolved**.  
+- **`totalStakeOnOutcome[winningOutcomeIndex] > 0`** — someone must have bet on the winning side, or the tx **reverts** (`NoWinningStake`).
+
+---
+
+## 4. After the simulation / betting ends — how money moves (parimutuel)
 
 This is **not** the sandbox “credits.” **Real money** is **USDC on Base** in **`ChaosParimutuelMarket`**.
 
@@ -66,6 +102,12 @@ This is **not** the sandbox “credits.” **Real money** is **USDC on Base** in
 
 1. **Owner** calls **`resolveMarket(marketId, winningOutcomeIndex)`** on Base when the winning agent is final (must match the outcome index for that agent).  
 2. The contract **locks** how much USDC is in the pool and how much was staked on the winning outcome.
+
+### Claim button on the dashboard
+
+If the market is **`RESOLVED`** in the app **and** your position is on the **winning agent**, the **Your positions** table shows **Claim winnings**. That sends **`claim(marketId)`** from your connected wallet, then indexes the tx. You still pay **gas (ETH on Base)**.
+
+If you don’t see the button: the market may not be resolved on-chain yet, you’re on the wrong outcome, or you already claimed (on-chain stake is 0).
 
 ### How a correct bettor **gets USDC**
 
@@ -91,7 +133,7 @@ While **`block.timestamp < closeTime`** and the market is not resolved, they can
 
 ---
 
-## 4. Short checklist for your 22–23 Mar IST window
+## 5. Short checklist for your 22–23 Mar IST window
 
 | Step | Action |
 |------|--------|
@@ -102,6 +144,6 @@ While **`block.timestamp < closeTime`** and the market is not resolved, they can
 
 ---
 
-## 5. Disclaimer
+## 6. Disclaimer
 
 Smart contracts and markets involve risk. This document is operational guidance, not legal or financial advice.
