@@ -10,6 +10,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 **Deploy live (Render):** step-by-step guide → **[docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md)**.
 
+**IST schedule & payouts:** auto-start/stop sandbox + how winners get USDC → **[docs/SANDBOX_SCHEDULE_AND_PAYOUTS.md](docs/SANDBOX_SCHEDULE_AND_PAYOUTS.md)**.
+
 ---
 
 ## Table of contents
@@ -224,6 +226,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `SEED_START_CREDITS` | No | Same starting **credits** for every agent when seeding (default **`100`**) |
 | `SEED_START_FOOD` | No | Same starting **food** for every agent (default **`20`**) |
 | `SEED_START_ENERGY` | No | Same starting **energy** for every agent (default **`10`**) |
+| `SIMULATION_AUTO_START_AT` | No | ISO 8601 with offset (e.g. **`2026-03-22T01:00:00+05:30`** for 1:00 IST) — auto-starts Groq simulation |
+| `SIMULATION_AUTO_STOP_AT` | No | ISO 8601 — auto-stops simulation (must be **after** start). See **[docs/SANDBOX_SCHEDULE_AND_PAYOUTS.md](docs/SANDBOX_SCHEDULE_AND_PAYOUTS.md)** |
 
 ---
 

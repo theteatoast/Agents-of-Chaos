@@ -12,6 +12,7 @@ import predictionMarketRoutes from './routes/predictionMarkets.js';
 import walletRoutes from './routes/wallet.js';
 import positionsRoutes from './routes/positions.js';
 import { resolveMarketsByDeadline } from './services/predictionMarketService.js';
+import { startSimulationScheduler } from './services/simulationSchedule.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: true });
@@ -45,6 +46,8 @@ app.listen({ port: config.port, host: '0.0.0.0' }, (err, address) => {
     console.log('   Agents: economy (earn / trade / scam / starve) · humans bet on richest');
     console.log('   POST /simulation/start  → begin simulation');
     console.log('   POST /simulation/stop   → pause simulation\n');
+
+    startSimulationScheduler();
 
     setInterval(() => {
         resolveMarketsByDeadline()

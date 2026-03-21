@@ -1,10 +1,15 @@
 import { startSimulation, stopSimulation, getSimulationStatus, resetSimulationState } from '../simulation/tickEngine.js';
+import { getSimulationScheduleInfo } from '../services/simulationSchedule.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
 
 export default async function simulationRoutes(fastify) {
     const startHandler = async () => ({ domain: 'sandbox', ...startSimulation() });
     const stopHandler = async () => ({ domain: 'sandbox', ...stopSimulation() });
-    const statusHandler = async () => ({ domain: 'sandbox', ...getSimulationStatus() });
+    const statusHandler = async () => ({
+        domain: 'sandbox',
+        ...getSimulationStatus(),
+        schedule: getSimulationScheduleInfo(),
+    });
     const resetHandler = async () => ({ domain: 'sandbox', ...(await resetSimulationState()) });
 
     fastify.post('/simulation/start', { preHandler: requireAdmin }, startHandler);
