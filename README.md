@@ -129,6 +129,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 3. **Leaderboard** — Each tick, the **richest agent** is stored in **`tick_snapshots`** — that’s the source of truth for **who wins** when a bet resolves.
 4. **Stop** — `POST /simulation/stop`.
 
+**Survival vs competition:** Agents lose **food** over time unless they **buy** or manage credits. Defaults are tuned so short runs aren’t mass-starvation by tick 7: food drains **every 2 ticks** (configurable), seed food is **14–35**, and Groq prompts nudge **BUY_FOOD** when food is low. Tune **`FOOD_CONSUME_EVERY_N_TICKS`**, **`TICK_INTERVAL_MS`**, and Groq delays if you still see 429s.
+
 **Credits in the economy are not USDC** — they’re the in-game score. **USDC on Base** is only for **betting** on those outcomes (see below).
 
 ---
@@ -201,6 +203,11 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 |----------|----------|-------------|
 | `DATABASE_URL` | Yes | Postgres connection string (Neon: include `?sslmode=require`) |
 | `GROQ_API_KEY` | Yes* | Groq API key for agent LLM (*required for simulation ticks) |
+| `TICK_INTERVAL_MS` | No | Wall-clock ms between economy ticks (default **`30000`**). Should be **≥ (number of agents × `GROQ_MIN_DELAY_MS`)** so one tick finishes before the next starts (avoids overlapping Groq bursts). |
+| `GROQ_MIN_DELAY_MS` | No | Pause between **sequential** Groq calls (default **`2100`** ≈ ≤28 RPM). Set **`0`** only if your Groq tier allows higher throughput. |
+| `GROQ_MAX_CONCURRENT` | No | Parallel Groq calls per tick (default **`1`**). Increase only with a higher rate limit; parallel calls can spike RPM. |
+| `GROQ_MAX_RETRIES` | No | Retries on **429** / rate limit (default **`3`**, exponential backoff). |
+| `FOOD_CONSUME_EVERY_N_TICKS` | No | Consume **1 food** every **N** ticks (default **`2`**). Use **`1`** to restore the old “harsh” every-tick hunger. |
 | `PORT` | No | HTTP port (default `3000`) |
 | `BASE_RPC_URL` | For chain | Base JSON-RPC (default `https://mainnet.base.org`) |
 | `BASE_CHAIN_ID` | No | Default `8453` (Base mainnet) |
@@ -222,8 +229,17 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `npm run migrate` | Add `betting_opens_at` / `betting_closes_at` if missing |
 | `npm run migrate:tx` | Unique partial index on `market_trades(tx_hash)` where not null (idempotent indexing) |
 | `npm run seed` | **Destructive** reseed: agents + one default “who’s richest?” betting market |
+| `npm run db:reset` | Same wipe + seed as `seed` (alias). Clears **wallet links**, trades, events, snapshots — full sandbox + market reset |
 
-**Neon:** Create a project, paste `DATABASE_URL`, run `setup-db` then migrations. Use `seed` once for a demo dataset.
+**Start the simulation from scratch (clean DB + tick 0):**
+
+1. Stop the sim if it’s running (`POST /simulation/stop` or UI).
+2. Run **`npm run db:reset`** (or **`npm run seed`**) with `DATABASE_URL` set.
+3. **Restart** `npm run dev` **or** call **`POST /simulation/reset`** (admin key) so the server’s in-memory tick counter matches the DB (otherwise a long-running process could still use an old tick number).
+
+To **revert uncommitted code** (separate from DB): `git checkout -- .` or `git restore .` — only if you use Git and want to discard local edits.
+
+**Neon:** Create a project, paste `DATABASE_URL`, run `setup-db` then migrations. Use `seed` or `db:reset` once for a demo dataset.
 
 ---
 
@@ -235,6 +251,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 |--------|------|-------------|
 | `POST` | `/simulation/start` | Start the tick loop (**admin key required**) — alias: `/sandbox/simulation/start` |
 | `POST` | `/simulation/stop` | Stop the tick loop (**admin key required**) |
+| `POST` | `/simulation/reset` | Stop ticks and set in-memory tick from **`market_state`** (**admin key**) — use after `db:reset` without restarting the server — alias: `/sandbox/simulation/reset` |
 | `GET` | `/simulation/status` | Status |
 | `GET` | `/agents` | List agents (alias: `/sandbox/agents`) |
 | `GET` | `/market` | Food/energy prices & tick (alias: `/sandbox/market`) |

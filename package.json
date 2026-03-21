@@ -15,7 +15,8 @@
     "deploy:contract": "node scripts/deploy.cjs",
     "register:market": "node scripts/registerMarketFromDb.cjs",
     "resolve:market": "node scripts/resolveMarketOnChain.cjs",
-    "seed": "node db/seed.js"
+    "seed": "node db/seed.js",
+    "db:reset": "node db/reset.js"
   },
   "keywords": [],
   "license": "MIT",

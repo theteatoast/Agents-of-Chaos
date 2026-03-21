@@ -1,6 +1,8 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import pool from './index.js';
 
-const AGENTS = [
+export const AGENTS = [
     { name: 'tk', personality: 'Aggressive trader, always looking for profit' },
     { name: 'Srijan', personality: 'Conservative saver, hoards resources' },
     { name: 'Kunal', personality: 'Risk-taker, loves volatile markets' },
@@ -13,7 +15,11 @@ const AGENTS = [
     { name: 'NPC 4', personality: 'Energy-obsessed, prioritizes energy above all' },
 ];
 
-async function seed() {
+/**
+ * Wipe all app data and re-seed agents + default prediction market + tick 0 market state.
+ * Destructive: clears wallet links, trades, positions, events, snapshots.
+ */
+export async function wipeAndSeed() {
     // Clear existing data (order respects FKs)
     await pool.query('DELETE FROM protocol_fees');
     await pool.query('DELETE FROM market_trades');
@@ -23,12 +29,13 @@ async function seed() {
     await pool.query('DELETE FROM tick_snapshots');
     await pool.query('DELETE FROM event_logs');
     await pool.query('DELETE FROM market_state');
+    await pool.query('DELETE FROM user_wallet_links');
     await pool.query('DELETE FROM agents');
 
     // Insert agents with random starting balances
     for (const agent of AGENTS) {
         const credits = Math.floor(Math.random() * 150) + 50;  // 50-200
-        const food = Math.floor(Math.random() * 15) + 5;       // 5-20
+        const food = Math.floor(Math.random() * 22) + 14;      // 14-35 — buffer so early ticks aren’t mass starvation
         const energy = Math.floor(Math.random() * 15) + 5;     // 5-20
         await pool.query(
             'INSERT INTO agents (name, personality, credits, food, energy) VALUES ($1, $2, $3, $4, $5)',
@@ -72,10 +79,21 @@ async function seed() {
     );
 
     console.log('🌱 Seeded 10 agents and initial market state.');
-    await pool.end();
 }
 
-seed().catch((err) => {
-    console.error('❌ Seed failed:', err);
-    process.exit(1);
-});
+async function seedCli() {
+    try {
+        await wipeAndSeed();
+        console.log('✅ Done. Restart the server (or POST /simulation/reset) so the in-memory tick matches the DB.');
+    } catch (err) {
+        console.error('❌ Seed failed:', err);
+        process.exit(1);
+    } finally {
+        await pool.end();
+    }
+}
+
+const __seedFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__seedFile)) {
+    seedCli();
+}

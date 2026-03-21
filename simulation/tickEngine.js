@@ -13,9 +13,15 @@ let running = false;
 // Economy constants
 const WORK_PAY = 10;
 const FOOD_CONSUME_PER_TICK = 1;
-const DECISION_CONCURRENCY = 4;
 
-function applyAction(agent, action, market) {
+/** When FOOD_CONSUME_EVERY_N_TICKS > 1, only some ticks drain food (fairer short runs). */
+function shouldConsumeFoodThisTick(tick, everyN) {
+    const n = Math.max(1, Math.floor(everyN));
+    if (n <= 1) return true;
+    return (tick - 1) % n === 0;
+}
+
+function applyAction(agent, action, market, { consumeFood }) {
     const events = [];
 
     switch (action) {
@@ -70,8 +76,10 @@ function applyAction(agent, action, market) {
             break;
     }
 
-    // Consume food each tick
-    agent.food = Math.max(0, agent.food - FOOD_CONSUME_PER_TICK);
+    // Metabolism: drain food on scheduled ticks only (configurable)
+    if (consumeFood) {
+        agent.food = Math.max(0, agent.food - FOOD_CONSUME_PER_TICK);
+    }
     if (agent.food === 0) {
         agent.status = 'STARVING';
         events.push(`⚠️ ${agent.name} is STARVING!`);
@@ -104,6 +112,51 @@ async function mapWithConcurrency(items, concurrency, mapper) {
     return results;
 }
 
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Groq calls: default sequential + delay to avoid 429 bursts on free tier.
+ * Set GROQ_MAX_CONCURRENT>1 only if your Groq plan allows higher RPM.
+ */
+async function collectAgentDecisions(agents, market) {
+    const maxC = config.groqMaxConcurrent ?? 1;
+    const minDelay = config.groqMinDelayMs ?? 0;
+
+    if (maxC <= 1) {
+        const decisions = [];
+        for (let i = 0; i < agents.length; i++) {
+            try {
+                decisions.push(await getAgentDecision(agents[i], market));
+            } catch {
+                decisions.push('HOLD');
+            }
+            if (minDelay > 0 && i < agents.length - 1) {
+                await delay(minDelay);
+            }
+        }
+        return decisions;
+    }
+
+    const decisions = new Array(agents.length);
+    for (let i = 0; i < agents.length; i += maxC) {
+        const slice = agents.slice(i, i + maxC);
+        const batch = await mapWithConcurrency(slice, maxC, async (agent, j) => {
+            try {
+                return await getAgentDecision(agent, market);
+            } catch {
+                return 'HOLD';
+            }
+        });
+        for (let k = 0; k < batch.length; k++) {
+            decisions[i + k] = batch[k];
+        }
+        if (minDelay > 0 && i + maxC < agents.length) {
+            await delay(minDelay);
+        }
+    }
+    return decisions;
+}
+
 async function runTick() {
     try {
         currentTick++;
@@ -113,17 +166,13 @@ async function runTick() {
         const market = await getMarketState();
 
         const allEvents = [];
-        const decisions = await mapWithConcurrency(agents, DECISION_CONCURRENCY, async (agent) => {
-            try {
-                return await getAgentDecision(agent, market);
-            } catch {
-                return 'HOLD';
-            }
-        });
+        const decisions = await collectAgentDecisions(agents, market);
+
+        const consumeFood = shouldConsumeFoodThisTick(currentTick, config.foodConsumeEveryNTicks ?? 2);
 
         for (let i = 0; i < agents.length; i++) {
             const action = decisions[i];
-            const events = applyAction(agents[i], action, market);
+            const events = applyAction(agents[i], action, market, { consumeFood });
             for (const description of events) {
                 allEvents.push({ tick: currentTick, description });
                 console.log(`  ${description}`);
@@ -156,6 +205,15 @@ export function startSimulation() {
     running = true;
     intervalId = setInterval(runTick, config.tickInterval);
     console.log('🚀 Simulation started');
+    const n = config.groqMaxConcurrent ?? 1;
+    const d = config.groqMinDelayMs ?? 0;
+    const foodN = config.foodConsumeEveryNTicks ?? 2;
+    console.log(
+        `   Economy: food drains 1 unit every ${foodN} tick(s) · Groq: ${n} concurrent · ${d}ms between sequential calls`
+    );
+    console.log(
+        `   Tip: keep TICK_INTERVAL_MS ≥ (agents × GROQ_MIN_DELAY_MS) + buffer to stay under Groq RPM limits.`
+    );
     return { message: 'Simulation started', tick: currentTick };
 }
 
@@ -170,4 +228,24 @@ export function stopSimulation() {
 
 export function getSimulationStatus() {
     return { running, tick: currentTick };
+}
+
+/**
+ * Stop the tick loop and set **currentTick** from the latest **market_state** row (usually 0 after `npm run db:reset`).
+ * Call this after wiping the DB while the server stays up, so the next tick doesn’t continue from an old tick number.
+ */
+export async function resetSimulationState() {
+    if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+    }
+    running = false;
+    try {
+        const ms = await getMarketState();
+        currentTick = Number(ms.tick) || 0;
+    } catch {
+        currentTick = 0;
+    }
+    console.log(`🔁 Simulation state reset (tick=${currentTick}, synced from DB).`);
+    return { message: 'Simulation reset', tick: currentTick, running: false };
 }
