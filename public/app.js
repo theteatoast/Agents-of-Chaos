@@ -842,7 +842,12 @@ async function loadOutcomes(marketId) {
   const res = await api(`/markets/${marketId}/outcomes`);
   marketOutcomes = res.outcomes || [];
   const select = document.getElementById('outcome-select');
+  // Preserve user selection when markets/outcomes refresh on an interval (otherwise first option wins).
+  const prevOutcomeId = select?.value;
   select.innerHTML = marketOutcomes.map((o) => `<option value="${o.id}">${o.agent_name}</option>`).join('');
+  if (prevOutcomeId && marketOutcomes.some((o) => String(o.id) === String(prevOutcomeId))) {
+    select.value = prevOutcomeId;
+  }
   updatePoolShareHint();
   scheduleQuotePreview();
 }
