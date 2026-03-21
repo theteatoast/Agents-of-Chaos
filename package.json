@@ -16,7 +16,11 @@
     "register:market": "node scripts/registerMarketFromDb.cjs",
     "resolve:market": "node scripts/resolveMarketOnChain.cjs",
     "seed": "node db/seed.js",
-    "db:reset": "node db/reset.js"
+    "db:reset": "node db/reset.js",
+    "render:dbinit": "node db/schema.js && node db/migrate_market_times.js && node db/migrate_tx_unique.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [],
   "license": "MIT",

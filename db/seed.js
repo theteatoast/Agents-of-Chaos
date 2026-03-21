@@ -2,6 +2,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pool from './index.js';
 
+/** Same for every agent (fair start). Override with SEED_START_CREDITS / SEED_START_FOOD / SEED_START_ENERGY. */
+function startingStats() {
+    const credits = Number(process.env.SEED_START_CREDITS ?? 100);
+    const food = Number.parseInt(process.env.SEED_START_FOOD ?? '20', 10);
+    const energy = Number.parseInt(process.env.SEED_START_ENERGY ?? '10', 10);
+    return {
+        credits: Number.isFinite(credits) && credits > 0 ? credits : 100,
+        food: Number.isFinite(food) && food >= 0 ? food : 20,
+        energy: Number.isFinite(energy) && energy >= 0 ? energy : 10,
+    };
+}
+
 export const AGENTS = [
     { name: 'tk', personality: 'Aggressive trader, always looking for profit' },
     { name: 'Srijan', personality: 'Conservative saver, hoards resources' },
@@ -32,11 +44,9 @@ export async function wipeAndSeed() {
     await pool.query('DELETE FROM user_wallet_links');
     await pool.query('DELETE FROM agents');
 
-    // Insert agents with random starting balances
+    // Every agent gets identical starting credits / food / energy (fair competition)
+    const { credits, food, energy } = startingStats();
     for (const agent of AGENTS) {
-        const credits = Math.floor(Math.random() * 150) + 50;  // 50-200
-        const food = Math.floor(Math.random() * 22) + 14;      // 14-35 — buffer so early ticks aren’t mass starvation
-        const energy = Math.floor(Math.random() * 15) + 5;     // 5-20
         await pool.query(
             'INSERT INTO agents (name, personality, credits, food, energy) VALUES ($1, $2, $3, $4, $5)',
             [agent.name, agent.personality, credits, food, energy]
@@ -78,7 +88,9 @@ export async function wipeAndSeed() {
         [marketInsert.rows[0].id]
     );
 
-    console.log('🌱 Seeded 10 agents and initial market state.');
+    console.log(
+        `🌱 Seeded 10 agents (each: ${credits} credits, ${food} food, ${energy} energy) and initial market state.`
+    );
 }
 
 async function seedCli() {

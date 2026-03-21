@@ -8,6 +8,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 **Money at risk:** Parimutuel betting uses **real USDC on Base**. If you bet on the **wrong** agent, you can **lose the full net amount** you staked on that outcome. If you bet on the **right** agent, your profit depends on pool size and how many others picked the same winner — see [How payouts work](#how-payouts-work-profit-loss-risk) and [After betting closes](#after-betting-closes-resolution-and-payouts).
 
+**Deploy live (Render):** step-by-step guide → **[docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md)**.
+
 ---
 
 ## Table of contents
@@ -29,6 +31,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 12. [Security & operations](#security--operations)
 13. [Troubleshooting](#troubleshooting)
 14. [Scripts](#scripts)
+15. [Deploy on Render](#deploy-on-render)
 
 ---
 
@@ -129,7 +132,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 3. **Leaderboard** — Each tick, the **richest agent** is stored in **`tick_snapshots`** — that’s the source of truth for **who wins** when a bet resolves.
 4. **Stop** — `POST /simulation/stop`.
 
-**Survival vs competition:** Agents lose **food** over time unless they **buy** or manage credits. Defaults are tuned so short runs aren’t mass-starvation by tick 7: food drains **every 2 ticks** (configurable), seed food is **14–35**, and Groq prompts nudge **BUY_FOOD** when food is low. Tune **`FOOD_CONSUME_EVERY_N_TICKS`**, **`TICK_INTERVAL_MS`**, and Groq delays if you still see 429s.
+**Survival vs competition:** Agents lose **food** over time unless they **buy** or manage credits. **`npm run seed` / `db:reset`** gives **every agent the same** starting credits, food, and energy (defaults **100 / 20 / 10** — override with **`SEED_START_CREDITS`**, **`SEED_START_FOOD`**, **`SEED_START_ENERGY`**). Food drains **every 2 ticks** by default (configurable). Tune **`FOOD_CONSUME_EVERY_N_TICKS`**, **`TICK_INTERVAL_MS`**, and Groq delays if you still see 429s.
 
 **Credits in the economy are not USDC** — they’re the in-game score. **USDC on Base** is only for **betting** on those outcomes (see below).
 
@@ -218,6 +221,9 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `ALLOW_UNVERIFIED_TRADES` | No | Set `true` **only in dev** — enables DB-only `POST /markets/trade` |
 | `ADMIN_API_KEY` | **Yes (prod)** | Min **12** characters. Protects `POST /simulation/start`, `POST /simulation/stop`, `POST /markets` (create), and `POST /markets/trade`. Send `Authorization: Bearer <key>` or `X-Admin-Key`. The dashboard prompts once per browser session for start/stop. |
 | `MARKET_CLOSES_AT` | No | ISO 8601 — used by **`npm run seed`** for default `betting_closes_at` |
+| `SEED_START_CREDITS` | No | Same starting **credits** for every agent when seeding (default **`100`**) |
+| `SEED_START_FOOD` | No | Same starting **food** for every agent (default **`20`**) |
+| `SEED_START_ENERGY` | No | Same starting **energy** for every agent (default **`10`**) |
 
 ---
 
@@ -376,6 +382,13 @@ This is a **parimutuel** market, not an order book or CPMM: **all losing stakes 
 | `npm run deploy:contract` | Deploy `ChaosParimutuelMarket` to Base (needs `DEPLOYER_PRIVATE_KEY` + ETH for gas) |
 | `npm run register:market -- <marketId>` | Owner: `registerMarket` from DB row (gas only) |
 | `npm run resolve:market -- <marketId> <winningOutcomeIndex>` | Owner: `resolveMarket` on-chain |
+| `npm run render:dbinit` | `schema` + migrations (idempotent) — used in **Render** build |
+
+---
+
+## Deploy on Render
+
+See **[docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md)** for the full checklist (Postgres, `DATABASE_URL`, build/start commands, env vars, optional seed, free-tier sleep).
 
 ---
 
