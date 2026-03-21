@@ -54,70 +54,6 @@ export function formatSignedInt256ToNumber(value, decimals = 6) {
     return neg ? -n : n;
 }
 
-export async function fetchBetEventFromTx(txHash) {
-    const artifact = loadArtifact();
-    const iface = getIface();
-    if (!config.predictionMarketContractAddress) {
-        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
-    }
-    const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
-    const net = await provider.getNetwork();
-    if (Number(net.chainId) !== config.baseChainId) {
-        throw new Error(`RPC chainId mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
-    }
-
-    const receipt = await provider.getTransactionReceipt(txHash);
-    if (!receipt) throw new Error('Transaction not found or not mined');
-    if (receipt.status !== 1) throw new Error('Transaction reverted');
-
-    const contractAddr = config.predictionMarketContractAddress.toLowerCase();
-    const betTopic = iface.getEvent('BetPlaced').topicHash;
-    const log = receipt.logs.find(
-        (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === betTopic
-    );
-    if (!log) throw new Error('No BetPlaced event from the prediction market contract in this receipt');
-
-    const parsed = iface.parseLog({ topics: log.topics, data: log.data });
-    return {
-        user: parsed.args.user,
-        marketId: Number(parsed.args.marketId),
-        outcomeIndex: Number(parsed.args.outcomeIndex),
-        grossUsdc: parsed.args.grossUsdc,
-        feeUsdc: parsed.args.feeUsdc,
-        netUsdc: parsed.args.netUsdc,
-    };
-}
-
-/** @returns {Promise<number[]>} net stake per outcome index (USDC float) */
-export async function readMarketStakeTotals(marketId) {
-    const artifact = loadArtifact();
-    if (!config.predictionMarketContractAddress) {
-        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
-    }
-    const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
-    const c = new ethers.Contract(config.predictionMarketContractAddress, artifact.abi, provider);
-    const m = await c.markets(marketId);
-    const n = Number(m.outcomeCount);
-    if (!m.active || n < 1) return [];
-    const totals = [];
-    for (let i = 0; i < n; i++) {
-        const t = await c.totalStakeOnOutcome(marketId, i);
-        totals.push(Number(ethers.formatUnits(t, 6)));
-    }
-    return totals;
-}
-
-export async function readTotalPool(marketId) {
-    const artifact = loadArtifact();
-    if (!config.predictionMarketContractAddress) {
-        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
-    }
-    const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
-    const c = new ethers.Contract(config.predictionMarketContractAddress, artifact.abi, provider);
-    const p = await c.totalPool(marketId);
-    return Number(ethers.formatUnits(p, 6));
-}
-
 const ERC20_MIN = ['function allowance(address,address) view returns (uint256)', 'function balanceOf(address) view returns (uint256)'];
 
 const BASE_RPC_FALLBACKS = ['https://mainnet.base.org', 'https://base.llamarpc.com', 'https://base.publicnode.com'];
@@ -133,6 +69,91 @@ async function withRpcFallback(fn) {
         }
     }
     throw lastErr;
+}
+
+export async function fetchBetEventFromTx(txHash) {
+    loadArtifact();
+    const iface = getIface();
+    if (!config.predictionMarketContractAddress) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chainId mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+
+        const receipt = await provider.getTransactionReceipt(txHash);
+        if (!receipt) throw new Error('Transaction not found or not mined');
+        if (receipt.status !== 1) throw new Error('Transaction reverted');
+
+        const contractAddr = config.predictionMarketContractAddress.toLowerCase();
+        const betTopic = iface.getEvent('BetPlaced').topicHash;
+        const log = receipt.logs.find(
+            (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === betTopic
+        );
+        if (!log) throw new Error('No BetPlaced event from the prediction market contract in this receipt');
+
+        const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+        return {
+            user: parsed.args.user,
+            marketId: Number(parsed.args.marketId),
+            outcomeIndex: Number(parsed.args.outcomeIndex),
+            grossUsdc: parsed.args.grossUsdc,
+            feeUsdc: parsed.args.feeUsdc,
+            netUsdc: parsed.args.netUsdc,
+        };
+    });
+}
+
+/** @returns {Promise<number[]>} net stake per outcome index (USDC float) */
+export async function readMarketStakeTotals(marketId) {
+    const artifact = loadArtifact();
+    if (!config.predictionMarketContractAddress) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const mid = Number(marketId);
+    if (!Number.isFinite(mid) || mid < 1) return [];
+
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const c = new ethers.Contract(config.predictionMarketContractAddress, artifact.abi, provider);
+        const m = await c.markets(mid);
+        const n = Number(m.outcomeCount);
+        if (!m.active || n < 1) return [];
+        const totals = [];
+        for (let i = 0; i < n; i++) {
+            const t = await c.totalStakeOnOutcome(mid, i);
+            totals.push(Number(ethers.formatUnits(t, 6)));
+        }
+        return totals;
+    });
+}
+
+export async function readTotalPool(marketId) {
+    const artifact = loadArtifact();
+    if (!config.predictionMarketContractAddress) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const mid = Number(marketId);
+    if (!Number.isFinite(mid)) return 0;
+
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const c = new ethers.Contract(config.predictionMarketContractAddress, artifact.abi, provider);
+        const p = await c.totalPool(mid);
+        return Number(ethers.formatUnits(p, 6));
+    });
 }
 
 /**
@@ -175,5 +196,50 @@ export async function getBetPrecheck(marketId, walletAddress) {
             allowance_usdc: ethers.formatUnits(allowanceRaw, 6),
             balance_usdc: ethers.formatUnits(balanceRaw, 6),
         };
+    });
+}
+
+/**
+ * Dry-run `bet` on a reliable RPC (same as precheck). Surfaces reverts before the wallet signs.
+ * @param {number} marketId
+ * @param {number} outcomeIndex
+ * @param {bigint} grossSmallest — USDC amount in 6-decimal base units
+ * @param {string} fromAddress — wallet that will send the tx (for balance/allowance checks inside the call)
+ */
+export async function simulateBet(marketId, outcomeIndex, grossSmallest, fromAddress) {
+    const contractAddr = config.predictionMarketContractAddress;
+    if (!contractAddr) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const from = String(fromAddress || '').trim().toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(from)) {
+        throw new Error('Invalid wallet address');
+    }
+    const mid = Number(marketId);
+    const oid = Number(outcomeIndex);
+    if (!Number.isFinite(mid) || mid < 1) throw new Error('Invalid marketId');
+    if (!Number.isFinite(oid) || oid < 0) throw new Error('Invalid outcomeIndex');
+    if (typeof grossSmallest !== 'bigint' || grossSmallest <= 0n) throw new Error('Invalid gross amount');
+
+    const artifact = loadArtifact();
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const market = new ethers.Contract(contractAddr, artifact.abi, provider);
+        await market.bet.staticCall(mid, oid, grossSmallest, { from });
+
+        /** Wallets often fail estimateGas via their own RPC (missing revert data). Same params on server RPC usually works. */
+        let gas_limit = null;
+        try {
+            const data = market.interface.encodeFunctionData('bet', [mid, oid, grossSmallest]);
+            const gas = await provider.estimateGas({ to: contractAddr, from, data });
+            gas_limit = gas.toString();
+        } catch {
+            /* staticCall already proved the bet can execute; gas estimate is optional */
+        }
+        return { ok: true, gas_limit };
     });
 }

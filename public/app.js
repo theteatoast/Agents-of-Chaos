@@ -618,6 +618,9 @@ async function loadMarkets() {
   }).join('');
   if (prev && cachedMarkets.some((x) => String(x.id) === prev)) select.value = prev;
   if (cachedMarkets.length) {
+    if (!select.value || select.value === '') {
+      select.value = String(cachedMarkets[0].id);
+    }
     const id = Number(select.value || cachedMarkets[0].id);
     await loadOutcomes(id);
   }
@@ -839,6 +842,10 @@ async function placeTrade() {
   const outcomeId = Number(document.getElementById('outcome-select').value);
   const sideKey = getSideKey();
   const usdcAmount = Number(document.getElementById('usdc-amount').value);
+  if (!Number.isFinite(marketId) || marketId < 1) {
+    alert('Select a market (refresh the page if the list is empty).');
+    return;
+  }
   if (!Number.isFinite(usdcAmount) || usdcAmount <= 0) {
     alert('Enter a valid USDC amount.');
     return;
@@ -857,6 +864,10 @@ async function placeTrade() {
   }
 
   const outcomeIndex = Number(outcome.outcome_index);
+  if (!Number.isFinite(outcomeIndex) || outcomeIndex < 0) {
+    alert('Invalid outcome — refresh and pick an agent.');
+    return;
+  }
 
   tradeLocked = true;
   const btnTrade = document.getElementById('btn-trade');
@@ -915,20 +926,83 @@ async function placeTrade() {
     if (pre.resolved) {
       throw new Error(`Market #${marketId} is already resolved on-chain.`);
     }
+    if (outcomeIndex >= pre.outcomeCount) {
+      throw new Error(
+        `This agent’s index (${outcomeIndex}) is not valid on-chain (outcomeCount=${pre.outcomeCount}). ` +
+          `The contract may have been registered with fewer outcomes than your database — re-run: npm run register:market -- ${marketId}`
+      );
+    }
+
+    const balanceWei = eth.parseUnits(String(pre.balance_usdc || '0'), 6);
+    if (balanceWei < gross) {
+      throw new Error(
+        `Not enough USDC on Base in this wallet.\nNeed at least ${usdcAmount} USDC; balance ~${pre.balance_usdc} USDC.\nBridge or send USDC on Base (not Ethereum mainnet).`
+      );
+    }
 
     const usdc = new eth.Contract(cfg.usdc_contract, ERC20_MIN_ABI, signer);
     const market = new eth.Contract(cfg.prediction_market_contract, marketAbi, signer);
 
     const quoteEl = document.getElementById('quote-preview');
-    const cur = eth.parseUnits(String(pre.allowance_usdc || '0'), 6);
+    let cur = eth.parseUnits(String(pre.allowance_usdc || '0'), 6);
     if (cur < gross) {
       if (quoteEl) quoteEl.textContent = 'Approve USDC in your wallet…';
       const ap = await usdc.approve(cfg.prediction_market_contract, gross);
       await ap.wait();
+      const pre2 = await api(`/markets/${marketId}/precheck?wallet=${encodeURIComponent(user)}`);
+      if (pre2.error) throw new Error(pre2.error);
+      cur = eth.parseUnits(String(pre2.precheck?.allowance_usdc || '0'), 6);
+      if (cur < gross) {
+        throw new Error(
+          'USDC allowance is still too low after approve. Approve again for at least this bet amount (or unlimited) for the market contract.'
+        );
+      }
+    }
+
+    const sim = await api(`/markets/${marketId}/simulate-bet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        outcomeIndex,
+        gross_smallest: gross.toString(),
+        wallet: user,
+      }),
+    });
+    if (sim.error) {
+      throw new Error(
+        sim.error +
+          '\n\n(This dry-run uses the same rules as the chain — fix the issue above before trying the wallet again.)'
+      );
+    }
+
+    /** Server-estimated gas avoids wallet RPC eth_estimateGas (often shows misleading CALL_EXCEPTION / wrong calldata in MetaMask). */
+    let betOverrides = undefined;
+    if (sim.gas_limit) {
+      const raw = BigInt(sim.gas_limit);
+      const withHeadroom = (raw * 125n) / 100n;
+      const cap = 5000000n;
+      betOverrides = { gasLimit: withHeadroom > cap ? cap : withHeadroom };
     }
 
     if (quoteEl) quoteEl.textContent = 'Confirm bet in your wallet…';
-    const tx = await market.bet(marketId, outcomeIndex, gross);
+    let tx;
+    try {
+      tx = betOverrides
+        ? await market.bet(marketId, outcomeIndex, gross, betOverrides)
+        : await market.bet(marketId, outcomeIndex, gross);
+    } catch (betErr) {
+      const betMsg = String(betErr?.message || betErr?.shortMessage || betErr || '');
+      if (/missing revert data|CALL_EXCEPTION/i.test(betMsg)) {
+        throw new Error(
+          'Could not submit the transaction (gas estimate / RPC returned no revert data).\n' +
+            '• Confirm the wallet is on Base and you have enough ETH for gas.\n' +
+            '• Cancel any stuck pending tx, refresh, try again.\n' +
+            '• Open BaseScan → paste your wallet / contract — compare with server simulate-bet (already passed).\n\n' +
+            betMsg
+        );
+      }
+      throw betErr;
+    }
     if (quoteEl) quoteEl.textContent = 'Waiting for confirmation… ' + tx.hash;
     const receipt = await tx.wait();
     const st = receipt?.status;

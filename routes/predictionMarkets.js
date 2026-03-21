@@ -1,6 +1,6 @@
 import config from '../config/index.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
-import { getContractAbi, getBetPrecheck } from '../services/chainSync.js';
+import { getContractAbi, getBetPrecheck, simulateBet } from '../services/chainSync.js';
 import {
     listMarkets,
     createMarket,
@@ -81,6 +81,30 @@ export default async function predictionMarketRoutes(fastify) {
             return { precheck };
         } catch (error) {
             return reply.code(400).send({ error: error.message });
+        }
+    });
+
+    /** Dry-run `bet` on server RPC — catches BadOutcome / TradingClosed / allowance before wallet tx (helps Rabby). */
+    fastify.post('/markets/:marketId/simulate-bet', async (request, reply) => {
+        try {
+            const marketId = Number(request.params.marketId);
+            const { outcomeIndex, gross_smallest, wallet } = request.body || {};
+            const gross = BigInt(String(gross_smallest ?? '0'));
+            const result = await simulateBet(marketId, Number(outcomeIndex), gross, String(wallet || ''));
+            return { ok: true, gas_limit: result.gas_limit || null };
+        } catch (error) {
+            let msg = String(error?.shortMessage || error?.reason || error?.message || error);
+            if (/BadOutcome|outcome/i.test(msg)) {
+                msg +=
+                    ' — On-chain outcomeCount may not match your DB (re-run register:market with correct outcome count) or pick another agent.';
+            }
+            if (/TradingClosed|closed/i.test(msg)) {
+                msg += ' — Betting deadline has passed on-chain.';
+            }
+            if (/allowance|ERC20/i.test(msg)) {
+                msg += ' — Approve USDC for the market contract first.';
+            }
+            return reply.code(400).send({ error: msg });
         }
     });
 
