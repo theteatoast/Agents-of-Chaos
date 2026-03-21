@@ -1,5 +1,7 @@
 # Sandbox auto schedule (IST) & how winners get paid
 
+**Full operator timeline (all phases + stuck-funds fallback):** see **[OPERATOR_RUNBOOK.md](./OPERATOR_RUNBOOK.md)**.
+
 ## 1. Auto-start / auto-stop the **economy simulation** (Groq ticks)
 
 The server can start and stop the **sandbox simulation** on a wall-clock schedule using **ISO 8601** datetimes. **IST = UTC+5:30**, written as `+05:30` in the string.

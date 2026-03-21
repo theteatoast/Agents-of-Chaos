@@ -12,6 +12,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 **IST schedule & payouts:** auto-start/stop sandbox + how winners get USDC → **[docs/SANDBOX_SCHEDULE_AND_PAYOUTS.md](docs/SANDBOX_SCHEDULE_AND_PAYOUTS.md)**.
 
+**Operator checklist (timeline + stuck-funds fallback):** **[docs/OPERATOR_RUNBOOK.md](docs/OPERATOR_RUNBOOK.md)**.
+
 ---
 
 ## Table of contents
@@ -31,9 +33,10 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 10. [Economics & fees (parimutuel)](#economics--fees-parimutuel)
 11. [After betting closes: resolution and payouts](#after-betting-closes-resolution-and-payouts)
 12. [Security & operations](#security--operations)
-13. [Troubleshooting](#troubleshooting)
-14. [Scripts](#scripts)
-15. [Deploy on Render](#deploy-on-render)
+13. [Operator runbook (timeline + stuck funds)](#operator-runbook-timeline--stuck-funds)
+14. [Troubleshooting](#troubleshooting)
+15. [Scripts](#scripts)
+16. [Deploy on Render](#deploy-on-render)
 
 ---
 
@@ -349,7 +352,7 @@ This is a **parimutuel** market, not an order book or CPMM: **all losing stakes 
 ## Security & operations
 
 - **Treat as real DeFi** if there is material TVL: **professional audit**, **testnet drills**, **multisig owner**, monitored **`pause()`**, key hygiene.
-- **Owner powers:** `registerMarket` (metadata only — **no** USDC from owner), `resolveMarket`, `pause` / `unpause`, `setTreasury`.
+- **Owner powers:** `registerMarket` (metadata only — **no** USDC from owner), `resolveMarket`, `pause` / `unpause`, `setTreasury`, **`rescueUSDC`** (only while **paused** — emergency user support; can drain TVL if misused — **multisig** + **OPERATOR_RUNBOOK**).
 - **Do not** enable **`ALLOW_UNVERIFIED_TRADES`** in production.
 - Set a strong **`ADMIN_API_KEY`** so only you can start/stop the simulation, create markets via API, or use unverified DB trades. Never commit it; never expose it in frontend bundles (the UI only stores it in **sessionStorage** after you type it for start/stop).
 - **Confirm endpoint** is rate-limited; for heavy traffic consider Redis or a gateway limiter.
@@ -389,7 +392,14 @@ This is a **parimutuel** market, not an order book or CPMM: **all losing stakes 
 | `npm run deploy:contract` | Deploy `ChaosParimutuelMarket` to Base (needs `DEPLOYER_PRIVATE_KEY` + ETH for gas) |
 | `npm run register:market -- <marketId>` | Owner: `registerMarket` from DB row (gas only) |
 | `npm run resolve:market -- <marketId> <winningOutcomeIndex>` | Owner: `resolveMarket` on-chain |
+| `npm run rescue:usdc -- <to> <amountUsdc>` | Owner: **`rescueUSDC`** — contract must be **paused** first (see **docs/OPERATOR_RUNBOOK.md**) |
 | `npm run render:dbinit` | `schema` + migrations (idempotent) — used in **Render** build |
+
+---
+
+## Operator runbook (timeline + stuck funds)
+
+End-to-end **phases** (before launch → economy running → betting → resolve → claim → emergency rescue): **[docs/OPERATOR_RUNBOOK.md](docs/OPERATOR_RUNBOOK.md)**.
 
 ---
 

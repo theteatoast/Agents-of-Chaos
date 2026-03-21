@@ -525,6 +525,7 @@ export function getTransparencyPayload() {
             'After the betting deadline, the richest agent in the sandbox wins; the contract owner resolves the matching outcome index on-chain.',
             'Winners claim USDC from the contract via claim(marketId); payout is pro-rata by net stake on the winning outcome.',
             'Before betting closes, you can exit your full net stake with exitStake(marketId, outcomeIndex) — USDC returns to your wallet (no extra fee).',
+            'If funds are stuck after verification, the owner may pause() and rescueUSDC(to, amount) to a user — misuse can drain the contract; use multisig and document every rescue.',
             'This API only indexes confirmed on-chain bets — verify balances on BaseScan.',
             'Creating markets and simulation control may require admin credentials.',
         ],

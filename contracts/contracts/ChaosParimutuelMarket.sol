@@ -53,6 +53,8 @@ contract ChaosParimutuelMarket is Ownable, Pausable, ReentrancyGuard {
     event Claimed(address indexed user, uint256 indexed marketId, uint256 outcomeIndex, uint256 amount);
     event StakeExited(address indexed user, uint256 indexed marketId, uint256 outcomeIndex, uint256 netUsdcReturned);
     event TreasuryUpdated(address indexed treasury);
+    /// @notice Owner sent USDC out of the contract while paused (support / stuck funds — use with care).
+    event USDCRescued(address indexed to, uint256 amount);
 
     error BadMarket();
     error TradingClosed();
@@ -184,5 +186,14 @@ contract ChaosParimutuelMarket is Ownable, Pausable, ReentrancyGuard {
         usdc.safeTransfer(msg.sender, payout);
 
         emit Claimed(msg.sender, marketId, w, payout);
+    }
+
+    /// @notice Emergency: while **paused**, owner can send USDC to a user (e.g. claim/UI failed, verified off-chain).
+    /// @dev Pausing blocks new bets and exitStake; claim() still works unless you coordinate otherwise.
+    ///      Misuse can drain user funds — use a multisig owner and document every rescue publicly.
+    function rescueUSDC(address to, uint256 amount) external onlyOwner whenPaused nonReentrant {
+        if (to == address(0) || amount == 0) revert BadAmount();
+        usdc.safeTransfer(to, amount);
+        emit USDCRescued(to, amount);
     }
 }
