@@ -6,31 +6,44 @@ import config from '../config/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const ARTIFACT_REL = join(
+    'contracts',
+    'artifacts',
+    'contracts',
+    'contracts',
+    'ChaosParimutuelMarket.sol',
+    'ChaosParimutuelMarket.json'
+);
+
+let cachedArtifact = null;
+let cachedIface = null;
+
 function loadArtifact() {
-    const artifactPath = join(
-        __dirname,
-        '..',
-        'contracts',
-        'artifacts',
-        'contracts',
-        'contracts',
-        'ChaosPredictionMarket.sol',
-        'ChaosPredictionMarket.json'
-    );
-    const publicPath = join(__dirname, '..', 'public', 'abi', 'ChaosPredictionMarket.json');
+    if (cachedArtifact) return cachedArtifact;
+    const artifactPath = join(__dirname, '..', ARTIFACT_REL);
+    const publicPath = join(__dirname, '..', 'public', 'abi', 'ChaosParimutuelMarket.json');
     const path = existsSync(artifactPath) ? artifactPath : publicPath;
-    return JSON.parse(readFileSync(path, 'utf-8'));
+    if (!existsSync(path)) {
+        throw new Error(
+            'ChaosParimutuelMarket artifact not found. Run: npm run compile:contracts and copy abi to public/abi/ChaosParimutuelMarket.json'
+        );
+    }
+    cachedArtifact = JSON.parse(readFileSync(path, 'utf-8'));
+    cachedIface = new ethers.Interface(cachedArtifact.abi);
+    return cachedArtifact;
 }
 
-const artifact = loadArtifact();
-const iface = new ethers.Interface(artifact.abi);
+function getIface() {
+    loadArtifact();
+    return cachedIface;
+}
 
 export function getContractInterface() {
-    return iface;
+    return getIface();
 }
 
 export function getContractAbi() {
-    return artifact.abi;
+    return loadArtifact().abi;
 }
 
 export function formatSignedInt256ToNumber(value, decimals = 6) {
@@ -41,7 +54,9 @@ export function formatSignedInt256ToNumber(value, decimals = 6) {
     return neg ? -n : n;
 }
 
-export async function fetchTradeEventFromTx(txHash) {
+export async function fetchBetEventFromTx(txHash) {
+    const artifact = loadArtifact();
+    const iface = getIface();
     if (!config.predictionMarketContractAddress) {
         throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
     }
@@ -56,35 +71,109 @@ export async function fetchTradeEventFromTx(txHash) {
     if (receipt.status !== 1) throw new Error('Transaction reverted');
 
     const contractAddr = config.predictionMarketContractAddress.toLowerCase();
-    const tradeTopic = iface.getEvent('Trade').topicHash;
+    const betTopic = iface.getEvent('BetPlaced').topicHash;
     const log = receipt.logs.find(
-        (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === tradeTopic
+        (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === betTopic
     );
-    if (!log) throw new Error('No Trade event from the prediction market contract in this receipt');
+    if (!log) throw new Error('No BetPlaced event from the prediction market contract in this receipt');
 
     const parsed = iface.parseLog({ topics: log.topics, data: log.data });
     return {
         user: parsed.args.user,
         marketId: Number(parsed.args.marketId),
         outcomeIndex: Number(parsed.args.outcomeIndex),
-        side: Number(parsed.args.side),
         grossUsdc: parsed.args.grossUsdc,
         feeUsdc: parsed.args.feeUsdc,
         netUsdc: parsed.args.netUsdc,
-        sharesDelta: parsed.args.sharesDelta,
-        usdcToUser: parsed.args.usdcToUser,
     };
 }
 
-export async function readReservesOnChain(marketId, outcomeIndex) {
+/** @returns {Promise<number[]>} net stake per outcome index (USDC float) */
+export async function readMarketStakeTotals(marketId) {
+    const artifact = loadArtifact();
     if (!config.predictionMarketContractAddress) {
         throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
     }
     const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
     const c = new ethers.Contract(config.predictionMarketContractAddress, artifact.abi, provider);
-    const [ry, rn] = await Promise.all([c.reserveYes(marketId, outcomeIndex), c.reserveNo(marketId, outcomeIndex)]);
-    return {
-        reserve_yes: Number(ethers.formatUnits(ry, 6)),
-        reserve_no: Number(ethers.formatUnits(rn, 6)),
-    };
+    const m = await c.markets(marketId);
+    const n = Number(m.outcomeCount);
+    if (!m.active || n < 1) return [];
+    const totals = [];
+    for (let i = 0; i < n; i++) {
+        const t = await c.totalStakeOnOutcome(marketId, i);
+        totals.push(Number(ethers.formatUnits(t, 6)));
+    }
+    return totals;
+}
+
+export async function readTotalPool(marketId) {
+    const artifact = loadArtifact();
+    if (!config.predictionMarketContractAddress) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
+    const c = new ethers.Contract(config.predictionMarketContractAddress, artifact.abi, provider);
+    const p = await c.totalPool(marketId);
+    return Number(ethers.formatUnits(p, 6));
+}
+
+const ERC20_MIN = ['function allowance(address,address) view returns (uint256)', 'function balanceOf(address) view returns (uint256)'];
+
+const BASE_RPC_FALLBACKS = ['https://mainnet.base.org', 'https://base.llamarpc.com', 'https://base.publicnode.com'];
+
+async function withRpcFallback(fn) {
+    const urls = [config.baseRpcUrl, ...BASE_RPC_FALLBACKS.filter((u) => u !== config.baseRpcUrl)];
+    let lastErr;
+    for (const url of urls) {
+        try {
+            return await fn(url);
+        } catch (e) {
+            lastErr = e;
+        }
+    }
+    throw lastErr;
+}
+
+/**
+ * Server-side reads for bet UX — avoids browser wallet RPC issues (Rabby "missing revert data").
+ * @returns {Promise<{ marketId: number, active: boolean, resolved: boolean, outcomeCount: number, closeTime: number, feeBps: number, poolTotalUsdc: number, allowanceRaw: bigint, balanceRaw: bigint }>}
+ */
+export async function getBetPrecheck(marketId, walletAddress) {
+    const contractAddr = config.predictionMarketContractAddress;
+    if (!contractAddr) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const w = String(walletAddress || '').trim().toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(w)) {
+        throw new Error('Invalid wallet address');
+    }
+    const artifact = loadArtifact();
+    const mid = Number(marketId);
+    if (!Number.isFinite(mid) || mid < 1) throw new Error('Invalid marketId');
+
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const market = new ethers.Contract(contractAddr, artifact.abi, provider);
+        const m = await market.markets(mid);
+        const poolWei = await market.totalPool(mid);
+        const usdc = new ethers.Contract(config.usdcContractAddress, ERC20_MIN, provider);
+        const allowanceRaw = await usdc.allowance(w, contractAddr);
+        const balanceRaw = await usdc.balanceOf(w);
+        return {
+            marketId: mid,
+            active: Boolean(m.active),
+            resolved: Boolean(m.resolved),
+            outcomeCount: Number(m.outcomeCount),
+            closeTime: Number(m.closeTime),
+            feeBps: Number(m.feeBps),
+            pool_total_usdc: Number(ethers.formatUnits(poolWei, 6)),
+            allowance_usdc: ethers.formatUnits(allowanceRaw, 6),
+            balance_usdc: ethers.formatUnits(balanceRaw, 6),
+        };
+    });
 }

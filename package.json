@@ -10,7 +10,11 @@
     "setup-db": "node db/schema.js",
     "migrate": "node db/migrate_market_times.js",
     "migrate:tx": "node db/migrate_tx_unique.js",
-    "compile:contracts": "hardhat compile",
+    "compile:contracts": "hardhat compile && node scripts/copyParimutuelAbi.cjs",
+    "compile:contracts:force": "hardhat compile --force && node scripts/copyParimutuelAbi.cjs",
+    "deploy:contract": "node scripts/deploy.cjs",
+    "register:market": "node scripts/registerMarketFromDb.cjs",
+    "resolve:market": "node scripts/resolveMarketOnChain.cjs",
     "seed": "node db/seed.js"
   },
   "keywords": [],

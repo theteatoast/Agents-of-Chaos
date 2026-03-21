@@ -13,8 +13,6 @@ let tradeLocked = false;
 let quoteLocked = false;
 /** @type {'buy'|'sell'} */
 let betMode = 'buy';
-/** @type {'yes'|'no'} */
-let betYesNo = 'yes';
 let quoteDebounce = null;
 function getEthers() {
   if (typeof ethers !== 'undefined') return ethers;
@@ -39,15 +37,88 @@ const api = (path, opts) =>
     return j;
   });
 
+const SIM_ADMIN_KEY = 'sim_admin_key';
+
+function getSimAdminKey() {
+  try {
+    return sessionStorage.getItem(SIM_ADMIN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setSimAdminKey(k) {
+  try {
+    if (k) sessionStorage.setItem(SIM_ADMIN_KEY, k.trim());
+    else sessionStorage.removeItem(SIM_ADMIN_KEY);
+  } catch (_) {}
+}
+
+/** Prompt once per session; used for Authorization: Bearer on simulation routes. */
+async function ensureSimAdminKey() {
+  let k = getSimAdminKey();
+  if (k) return k;
+  const entered = prompt(
+    'Admin key required to start/stop the simulation.\n\nUse the same value as ADMIN_API_KEY on the server (not shared publicly).'
+  );
+  if (entered == null || String(entered).trim() === '') return null;
+  k = String(entered).trim();
+  setSimAdminKey(k);
+  return k;
+}
+
 // === Controls ===
 async function startSim() {
-  await api('/simulation/start', { method: 'POST' });
+  const key = await ensureSimAdminKey();
+  if (!key) return;
+  const res = await api('/simulation/start', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (res.error) {
+    if (String(res.error).includes('Forbidden') || String(res.error).includes('403')) {
+      setSimAdminKey('');
+      alert('Invalid admin key. Check ADMIN_API_KEY on the server matches what you entered.');
+      return;
+    }
+    if (String(res.error).includes('misconfiguration') || String(res.error).includes('ADMIN_API_KEY')) {
+      alert(res.error);
+      return;
+    }
+    alert(res.error);
+    return;
+  }
   refresh();
 }
+
 async function stopSim() {
-  await api('/simulation/stop', { method: 'POST' });
+  const key = await ensureSimAdminKey();
+  if (!key) return;
+  const res = await api('/simulation/stop', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (res.error) {
+    if (String(res.error).includes('Forbidden') || String(res.error).includes('403')) {
+      setSimAdminKey('');
+      alert('Invalid admin key.');
+      return;
+    }
+    if (String(res.error).includes('misconfiguration') || String(res.error).includes('ADMIN_API_KEY')) {
+      alert(res.error);
+      return;
+    }
+    alert(res.error);
+    return;
+  }
   refresh();
 }
+
+/** Clear stored admin key (e.g. after deploy). Call from console: clearSimAdminKey() */
+function clearSimAdminKey() {
+  setSimAdminKey('');
+}
+window.clearSimAdminKey = clearSimAdminKey;
 
 // === Init Charts ===
 function initCharts() {
@@ -320,6 +391,20 @@ function renderStatus(status) {
   const label = document.querySelector('.status-label');
   const startBtn = document.getElementById('btn-start');
   const stopBtn = document.getElementById('btn-stop');
+  if (!startBtn || !stopBtn) return;
+
+  const adminOk = marketConfig?.admin_configured !== false;
+  if (marketConfig && adminOk === false) {
+    dot.className = 'status-dot offline';
+    label.textContent = 'Stopped';
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+    startBtn.title = 'Server must set ADMIN_API_KEY (min 12 chars) to allow simulation control.';
+    stopBtn.title = startBtn.title;
+    return;
+  }
+  startBtn.title = '';
+  stopBtn.title = '';
 
   if (status.running) {
     dot.className = 'status-dot online';
@@ -420,43 +505,40 @@ function getSelectedOutcome() {
   return marketOutcomes.find((o) => o.id === outcomeId);
 }
 
-function updateYesNoPrices() {
+/** Parimutuel: show share of pool for selected agent (not misleading Yes/No “prices”). */
+function updatePoolShareHint() {
+  const line = document.getElementById('pool-share-line');
+  const sub = document.getElementById('pool-share-sub');
+  if (!line) return;
   const o = getSelectedOutcome();
-  const yesEl = document.getElementById('price-yes');
-  const noEl = document.getElementById('price-no');
-  if (!yesEl || !noEl) return;
+  const nAgents = marketOutcomes.length || 1;
   if (!o) {
-    yesEl.textContent = '—';
-    noEl.textContent = '—';
+    line.textContent = '—';
+    if (sub) sub.textContent = '';
     return;
   }
-  const y = Number(o.implied_yes ?? 0.5);
-  const n = Number(o.implied_no ?? 1 - y);
-  yesEl.textContent = `${(y * 100).toFixed(1)}¢`;
-  noEl.textContent = `${(n * 100).toFixed(1)}¢`;
+  const share = Number(o.implied_pool_share ?? o.implied_yes ?? 0);
+  const poolTotal = marketOutcomes.reduce((s, x) => s + Number(x.pool_stake_usdc || 0), 0);
+  const pct = (share * 100).toFixed(1);
+  line.textContent = `~${pct}% of pool if this agent wins`;
+  if (sub) {
+    if (poolTotal <= 0.000001) {
+      sub.textContent = `No bets yet · equal baseline 1/${nAgents} each (${nAgents} agents) — not USDC odds`;
+    } else {
+      sub.textContent = `Pool ≈ $${poolTotal.toFixed(2)} USDC on-chain (indexed)`;
+    }
+  }
 }
 
 function setBetMode(mode) {
   betMode = mode;
   document.getElementById('tab-buy')?.classList.toggle('pm-tab-active', mode === 'buy');
-  document.getElementById('tab-sell')?.classList.toggle('pm-tab-active', mode === 'sell');
-  document.getElementById('tab-buy')?.setAttribute('aria-selected', mode === 'buy');
-  document.getElementById('tab-sell')?.setAttribute('aria-selected', mode === 'sell');
+  document.getElementById('tab-buy')?.setAttribute('aria-selected', String(mode === 'buy'));
 }
 
-function setYesNo(yn) {
-  betYesNo = yn;
-  document.getElementById('btn-yes')?.classList.toggle('pm-yesno-active', yn === 'yes');
-  document.getElementById('btn-no')?.classList.toggle('pm-yesno-active', yn === 'no');
-}
-
+/** Parimutuel: single bet type — stake on selected agent (outcome). */
 function getSideKey() {
-  const buy = betMode === 'buy';
-  const yes = betYesNo === 'yes';
-  if (buy && yes) return 'BUY_YES';
-  if (buy && !yes) return 'BUY_NO';
-  if (!buy && yes) return 'SELL_YES';
-  return 'SELL_NO';
+  return 'BET';
 }
 
 function getPositionForOutcome() {
@@ -472,15 +554,11 @@ function scheduleQuotePreview() {
 
 function formatQuotePreview(q) {
   if (!q) return '';
-  const isBuy = String(q.side || '').startsWith('BUY');
-  if (isBuy) {
-    const sh = Math.abs(Number(q.sharesDelta ?? 0));
-    const fee = Number(q.feeUsdc ?? q.fee_on_gross_usdc ?? 0);
-    const net = Number(q.netUsdc ?? q.net_to_pool_usdc ?? 0);
-    return `~${sh.toFixed(4)} shares · fee ${fee.toFixed(4)} USDC · ${net.toFixed(4)} USDC to pool`;
-  }
-  const u = Number(q.usdc_to_user ?? 0);
-  return `~${u.toFixed(4)} USDC to you (after fees)`;
+  const fee = Number(q.feeUsdc ?? q.fee_on_gross_usdc ?? 0);
+  const net = Number(q.netUsdc ?? q.net_to_pool_usdc ?? 0);
+  const poolAfter = Number(q.pool_total_after_usdc ?? 0);
+  const share = Number(q.implied_share_of_pool_if_this_outcome_wins ?? 0);
+  return `fee ${fee.toFixed(4)} USDC · ${net.toFixed(4)} USDC to pool · pool ~${poolAfter.toFixed(2)} after · ~${(share * 100).toFixed(1)}% of pool if this outcome wins`;
 }
 
 function updateMarketMetaAndCountdown() {
@@ -518,6 +596,11 @@ async function loadMarketConfig() {
   try {
     const c = await api('/markets/config');
     if (!c.error) marketConfig = c;
+    const warn = document.getElementById('pm-contract-warning');
+    if (warn) {
+      const hasContract = !c.error && Boolean(c.prediction_market_contract);
+      warn.hidden = hasContract;
+    }
   } catch (e) {
     console.error(e);
   }
@@ -549,7 +632,7 @@ async function loadOutcomes(marketId) {
   marketOutcomes = res.outcomes || [];
   const select = document.getElementById('outcome-select');
   select.innerHTML = marketOutcomes.map((o) => `<option value="${o.id}">${o.agent_name}</option>`).join('');
-  updateYesNoPrices();
+  updatePoolShareHint();
   scheduleQuotePreview();
 }
 
@@ -688,16 +771,67 @@ async function applyAmountMax() {
   scheduleQuotePreview();
 }
 
-const SIDE_MAP = { BUY_YES: 0, BUY_NO: 1, SELL_YES: 2, SELL_NO: 3 };
+/**
+ * Switch to configured chain (Base) and return a fresh BrowserProvider so MetaMask prompts work.
+ */
+async function ensureWalletOnChain(eth, cfg) {
+  if (!cfg?.chain_id) throw new Error('Server config missing chain_id');
+  if (!window.ethereum) throw new Error('No wallet');
+  const want = BigInt(cfg.chain_id);
+  let provider = new eth.BrowserProvider(window.ethereum);
+  let net = await provider.getNetwork();
+  if (net.chainId === want) return provider;
+
+  const hex = '0x' + want.toString(16);
+  try {
+    await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
+  } catch (e) {
+    const code = e?.code;
+    if (code === 4902 && Number(cfg.chain_id) === 8453) {
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [
+          {
+            chainId: hex,
+            chainName: 'Base',
+            nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+            rpcUrls: [cfg.rpc_url || 'https://mainnet.base.org'],
+            blockExplorerUrls: ['https://basescan.org'],
+          },
+        ],
+      });
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
+    } else {
+      throw new Error('Please switch your wallet to Base (chain ' + cfg.chain_id + ').');
+    }
+  }
+  provider = new eth.BrowserProvider(window.ethereum);
+  net = await provider.getNetwork();
+  if (net.chainId !== want) {
+    throw new Error(
+      `Wallet is still not on chain ${cfg.chain_id} (Base). Rabby reports chain ${net.chainId}. Open Base in the wallet and try again.`
+    );
+  }
+  return provider;
+}
 
 async function placeTrade() {
   if (tradeLocked) return;
+  if (betMode !== 'buy') {
+    alert('Parimutuel markets only support betting on an outcome (Buy).');
+    return;
+  }
   if (!connectedWallet) {
     alert('Connect wallet first');
     return;
   }
   if (!marketConfig?.prediction_market_contract) {
-    alert('Set PREDICTION_MARKET_CONTRACT_ADDRESS on the server and deploy/register the market on-chain.');
+    alert(
+      'Server has no PREDICTION_MARKET_CONTRACT_ADDRESS.\n\n' +
+        '1) Deploy: npm run deploy:contract\n' +
+        '2) Add address to .env and restart\n' +
+        '3) Owner: registerMarket(...) — no USDC seed required (parimutuel)'
+    );
     return;
   }
 
@@ -722,11 +856,7 @@ async function placeTrade() {
     return;
   }
 
-  const side = SIDE_MAP[sideKey];
-  if (side === undefined) {
-    alert('Invalid side');
-    return;
-  }
+  const outcomeIndex = Number(outcome.outcome_index);
 
   tradeLocked = true;
   const btnTrade = document.getElementById('btn-trade');
@@ -736,20 +866,18 @@ async function placeTrade() {
     const eth = getEthers();
     if (!window.ethereum) throw new Error('No wallet');
 
-    const cfg = marketConfig || (await api('/markets/config'));
-    marketConfig = cfg;
-
-    const provider = new eth.BrowserProvider(window.ethereum);
-    const net = await provider.getNetwork();
-    if (Number(net.chainId) !== Number(cfg.chain_id)) {
-      const hex = '0x' + Number(cfg.chain_id).toString(16);
-      try {
-        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] });
-      } catch (e) {
-        throw new Error('Please switch your wallet to Base (chain ' + cfg.chain_id + ').');
-      }
+    let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
+    if (!cfg) {
+      const c = await api('/markets/config');
+      if (c.error) throw new Error(c.error);
+      cfg = c;
+      marketConfig = c;
+    }
+    if (!cfg.prediction_market_contract) {
+      throw new Error('Set PREDICTION_MARKET_CONTRACT_ADDRESS on the server and deploy/register on-chain.');
     }
 
+    const provider = await ensureWalletOnChain(eth, cfg);
     const signer = await provider.getSigner();
     const user = (await signer.getAddress()).toLowerCase();
     if (user !== connectedWallet) {
@@ -764,29 +892,52 @@ async function placeTrade() {
       body: JSON.stringify({ marketId, outcomeId, side: sideKey, usdcAmount }),
     });
     if (q.error) throw new Error(q.error);
-    /** min_out_suggested matches on-chain quote (1.5% slippage cushion vs expected shares or USDC to user). */
-    const suggested = Math.max(0, Number(q.quote.min_out_suggested ?? 0));
-    const minOut = eth.parseUnits(suggested.toFixed(6), 6);
 
-    const marketAbi = (await api('/markets/abi')).abi;
+    const abiRes = await api('/markets/abi');
+    if (abiRes.error || !abiRes.abi) throw new Error(abiRes.error || 'Contract ABI not available');
+    const marketAbi = abiRes.abi;
+
+    const preRes = await api(`/markets/${marketId}/precheck?wallet=${encodeURIComponent(user)}`);
+    if (preRes.error) {
+      throw new Error(
+        preRes.error +
+          '\n\n(Check server BASE_RPC_URL, deploy ChaosParimutuelMarket to Base, set PREDICTION_MARKET_CONTRACT_ADDRESS, run npm run register:market -- ' +
+          marketId +
+          ')'
+      );
+    }
+    const pre = preRes.precheck;
+    if (!pre?.active) {
+      throw new Error(
+        `Market #${marketId} is not active on-chain. Owner: npm run register:market -- ${marketId}`
+      );
+    }
+    if (pre.resolved) {
+      throw new Error(`Market #${marketId} is already resolved on-chain.`);
+    }
+
     const usdc = new eth.Contract(cfg.usdc_contract, ERC20_MIN_ABI, signer);
     const market = new eth.Contract(cfg.prediction_market_contract, marketAbi, signer);
 
     const quoteEl = document.getElementById('quote-preview');
-    if (side < 2) {
-      const cur = await usdc.allowance(user, cfg.prediction_market_contract);
-      if (cur < gross) {
-        if (quoteEl) quoteEl.textContent = 'Approving USDC spend…';
-        const ap = await usdc.approve(cfg.prediction_market_contract, eth.MaxUint256);
-        await ap.wait();
-      }
+    const cur = eth.parseUnits(String(pre.allowance_usdc || '0'), 6);
+    if (cur < gross) {
+      if (quoteEl) quoteEl.textContent = 'Approve USDC in your wallet…';
+      const ap = await usdc.approve(cfg.prediction_market_contract, gross);
+      await ap.wait();
     }
 
-    if (quoteEl) quoteEl.textContent = 'Confirm the trade in your wallet…';
-    const tx = await market.trade(marketId, outcome.outcome_index, side, gross, minOut);
+    if (quoteEl) quoteEl.textContent = 'Confirm bet in your wallet…';
+    const tx = await market.bet(marketId, outcomeIndex, gross);
     if (quoteEl) quoteEl.textContent = 'Waiting for confirmation… ' + tx.hash;
-  const receipt = await tx.wait();
-    if (receipt.status !== 1) throw new Error('Transaction reverted');
+    const receipt = await tx.wait();
+    const st = receipt?.status;
+    const ok =
+      st === 1 ||
+      st === 1n ||
+      (typeof st === 'string' && st === '0x1') ||
+      Number(st) === 1;
+    if (!ok) throw new Error('Transaction reverted on-chain (see BaseScan).');
 
     const confirm = await api('/markets/trade/confirm', {
       method: 'POST',
@@ -801,8 +952,9 @@ async function placeTrade() {
   } catch (e) {
     console.error(e);
     const quoteEl = document.getElementById('quote-preview');
-    if (quoteEl) quoteEl.textContent = 'Error: ' + (e.message || e);
-    alert(e.message || e);
+    const msg = e?.reason || e?.message || e?.shortMessage || String(e);
+    if (quoteEl) quoteEl.textContent = 'Error: ' + msg;
+    alert(msg);
   } finally {
     tradeLocked = false;
     if (btnTrade) btnTrade.disabled = false;
@@ -819,7 +971,7 @@ function renderPositionsTable(positions) {
   tbody.innerHTML = positions.map((p) => {
     const title = escapeHtml((p.title || '').slice(0, 32));
     const agent = escapeHtml(p.agent_name || '');
-    const unreal = Number(p.unrealized_pnl_usdc);
+    const unreal = Number(p.unrealized_pnl_usdc ?? 0);
     const unrealClass = unreal >= 0 ? 'pnl-pos' : 'pnl-neg';
     return `<tr>
       <td>${title}</td>
@@ -849,7 +1001,7 @@ async function loadPositions() {
 initCharts();
 refresh();
 loadTransparency();
-loadMarketConfig();
+loadMarketConfig().then(() => refresh());
 loadMarkets();
 setInterval(refresh, 3000);
 setInterval(loadMarkets, 5000);
@@ -860,24 +1012,12 @@ document.getElementById('market-select')?.addEventListener('change', (e) => {
 });
 
 document.getElementById('outcome-select')?.addEventListener('change', () => {
-  updateYesNoPrices();
+  updatePoolShareHint();
   scheduleQuotePreview();
 });
 
 document.getElementById('tab-buy')?.addEventListener('click', () => {
   setBetMode('buy');
-  scheduleQuotePreview();
-});
-document.getElementById('tab-sell')?.addEventListener('click', () => {
-  setBetMode('sell');
-  scheduleQuotePreview();
-});
-document.getElementById('btn-yes')?.addEventListener('click', () => {
-  setYesNo('yes');
-  scheduleQuotePreview();
-});
-document.getElementById('btn-no')?.addEventListener('click', () => {
-  setYesNo('no');
   scheduleQuotePreview();
 });
 document.querySelectorAll('.pm-chip[data-add]').forEach((btn) => {
@@ -889,6 +1029,10 @@ document.querySelectorAll('.pm-chip[data-add]').forEach((btn) => {
 document.getElementById('amt-50')?.addEventListener('click', () => applyAmount50());
 document.getElementById('amt-max')?.addEventListener('click', () => applyAmountMax());
 document.getElementById('usdc-amount')?.addEventListener('input', () => scheduleQuotePreview());
+document.getElementById('btn-trade')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  placeTrade();
+});
 
 window.connectWallet = connectWallet;
 window.previewTrade = previewTrade;

@@ -2,7 +2,7 @@
 
 **AI agents dropped into an economy** — they earn, trade, scam, or starve. **You can bet on who ends up richest.**
 
-The simulation runs in the database: credits, food, energy, and tick-by-tick chaos (powered by Groq). **Bets** are in **USDC on Base**: a CPMM-style market per agent outcome (`ChaosPredictionMarket.sol`). When betting closes, the **richest agent** in the economy (from the latest tick snapshot) wins — that’s what you’re predicting.
+The simulation runs in the database: credits, food, energy, and tick-by-tick chaos (powered by Groq). **Bets** are in **USDC on Base**: a **parimutuel** pool (`ChaosParimutuelMarket.sol`) — bettors’ money **is** the liquidity; protocol fee on each bet goes to treasury. When betting closes, the **richest agent** in the economy wins — you predicted which agent that would be.
 
 The API **indexes** on-chain trades into Postgres; it does not custody user funds. Off-chain `POST /markets/trade` (DB-only, unverified) is **disabled by default** — production flow is **wallet → contract → `POST /markets/trade/confirm`**.
 
@@ -44,7 +44,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
          │                                    │   market_outcomes, market_trades,
          │                                    │   market_positions, tick_snapshots…
          │                                    │
-         └── Browser wallet ──► Base RPC ──► ChaosPredictionMarket
+         └── Browser wallet ──► Base RPC ──► ChaosParimutuelMarket
                     │              ▲
                     │              └── chainSync.js: receipt, Trade event,
                     │                  reserveYes/No read-back
@@ -55,9 +55,9 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 | Area | Path |
 |------|------|
-| Contract | `contracts/contracts/ChaosPredictionMarket.sol` |
+| Contract | `contracts/contracts/ChaosParimutuelMarket.sol` |
 | Hardhat | `hardhat.config.cjs` (Solidity `viaIR: true` — avoids “stack too deep”) |
-| Browser ABI | `public/abi/ChaosPredictionMarket.json` (keep in sync after compile) |
+| Browser ABI | `public/abi/ChaosParimutuelMarket.json` (auto-copied after `npm run compile:contracts`) |
 | Config | `config/index.js` |
 | Chain indexing | `services/chainSync.js`, `services/predictionMarketService.js` |
 | Tick / Groq | `simulation/tickEngine.js`, `ai/groqClient.js` |
@@ -130,18 +130,18 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 ---
 
-### B. Betting on who ends richest (Base)
+### B. Betting on who ends richest (Base) — **parimutuel**
 
-1. **Open a betting market in Postgres** — `POST /markets` with `slug`, `title`, `settlementTick`, optional `feeBps`, `bettingOpensAt`, `bettingClosesAt`. One **outcome** is created per **agent** (`market_outcomes`) — you’re trading views on “will this agent be richest?”
-2. **Mirror on-chain** — Owner calls `registerMarket(marketId, closeTimeUnix, feeBps, outcomeCount)` on `ChaosPredictionMarket` so **`marketId` = `prediction_markets.id`** and **`outcomeCount` = number of agent outcomes** (stable order: `ORDER BY id` matches contract indices **0 … n-1**).
-3. **Bettor opens the dashboard** — Loads `/markets/config` and `/markets/abi`, switches wallet to **Base** (`BASE_CHAIN_ID`, default `8453`).
-4. **Quote** — `POST /markets/quote` returns CPMM-aligned numbers and `min_out_suggested` (slippage cushion for `minOut` on the contract).
-5. **Trade on-chain** — Bettor **approves USDC** (buys), then `trade(marketId, outcomeIndex, side, grossUsdc, minOut)`. Sides: `0=BUY_YES`, `1=BUY_NO`, `2=SELL_YES`, `3=SELL_NO` (same as UI `SIDE_MAP`).
-6. **Index** — After the tx is mined, the UI calls **`POST /markets/trade/confirm`** with `{ "txHash": "0x..." }`:
-   - Server fetches the receipt from Base RPC, decodes **`Trade`** from `PREDICTION_MARKET_CONTRACT_ADDRESS`.
-   - Updates **`reserve_yes` / `reserve_no`** from **on-chain** `reserveYes` / `reserveNo` (not recomputed).
-   - Upserts **`market_positions`**; inserts **`market_trades`** with unique **`tx_hash`** (idempotent).
-7. **Rate limit** — `/markets/trade/confirm` is limited to **30 requests/minute per IP** (in-memory).
+1. **Open a betting market in Postgres** — `POST /markets` with `slug`, `title`, `settlementTick`, optional `feeBps`, `bettingOpensAt`, `bettingClosesAt`. One **outcome** is created per **agent** (`market_outcomes`).
+2. **Mirror on-chain (no USDC from you)** — Deploy **`ChaosParimutuelMarket`** (`npm run deploy:contract`). Owner calls **`registerMarket(marketId, closeTimeUnix, feeBps, outcomeCount)`** — **only gas**, **no seed liquidity**. `marketId` = `prediction_markets.id`; `outcomeCount` = number of outcomes; indices **0 … n-1** match `ORDER BY id`.
+3. **Bettors fund the pool** — Each **`bet(marketId, outcomeIndex, grossUsdc)`** pulls USDC: **fee → treasury**, **net → on-chain pool**. All losing stakes + winning stakes stay in the contract until **`claim`**.
+4. **Dashboard** — Wallet on **Base**, `/markets/config` (`market_model: parimutuel`), `/markets/abi` → **`ChaosParimutuelMarket.json`**.
+5. **Quote** — `POST /markets/quote` with `{ marketId, outcomeId, side: "BET", usdcAmount }` — pool totals & fee (no AMM / no `minOut`).
+6. **On-chain bet** — Approve USDC, then **`bet(marketId, outcomeIndex, grossUsdc)`**.
+7. **Index** — UI **`POST /markets/trade/confirm`** with `{ "txHash" }`; server decodes **`BetPlaced`**, syncs **`market_outcomes`** stake mirrors from **`totalStakeOnOutcome`**.
+8. **Resolve (owner)** — After the economy winner is known, map **richest agent → outcome index** and call **`resolveMarket(marketId, winningOutcomeIndex)`** on-chain (must match DB `winning_agent_id` ordering).
+9. **Claim (winners)** — **`claim(marketId)`** on-chain; payout = **pro-rata** net stake on winning outcome × **full pool** (fixed snapshot at resolve). **Protocol revenue** = **fees on each bet** (transparent on BaseScan).
+10. **Rate limit** — `/markets/trade/confirm`: **30/min/IP**.
 
 **Dev escape hatch:** set `ALLOW_UNVERIFIED_TRADES=true` to allow **`POST /markets/trade`** (writes DB from server-side quote only — **not** for production).
 
@@ -155,22 +155,40 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
    npm run compile:contracts
    ```
 
-2. **Copy ABI for the browser** (artifacts are gitignored under `contracts/artifacts`; the app loads `public/abi/ChaosPredictionMarket.json`):
+2. **Compile** copies the ABI to `public/abi/ChaosParimutuelMarket.json` (see `scripts/copyParimutuelAbi.cjs`).
 
-   - From: `contracts/artifacts/contracts/contracts/ChaosPredictionMarket.sol/ChaosPredictionMarket.json`
-   - To: `public/abi/ChaosPredictionMarket.json`
+3. **Deploy** `ChaosParimutuelMarket` (constructor **`(USDC, TREASURY)`** — Base mainnet USDC default: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`):
 
-3. **Deploy** `ChaosPredictionMarket` with constructor **`(USDC, TREASURY)`** — Base mainnet USDC default in config: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
+   ```bash
+   # Requires DEPLOYER_PRIVATE_KEY in .env (wallet with ETH on Base for gas)
+   npm run deploy:contract
+   ```
 
-4. **Owner: approve USDC** to the contract, then **`registerMarket`**:
-   - Pulls seed liquidity from owner (`SEED_RESERVE` per leg × outcomes — see contract).
-   - **`marketId`** must match **`prediction_markets.id`** in Postgres.
-   - **`outcomeCount`** must match the number of **`market_outcomes`** rows for that market.
-   - **`closeTime`** should align with your product rules (Unix time); trading reverts after this on-chain.
+   Copy the printed address into **`.env`**:
 
-5. **Set env** — `PREDICTION_MARKET_CONTRACT_ADDRESS`, `PROTOCOL_TREASURY_ADDRESS`, `PROTOCOL_FEE_BPS`, `BASE_RPC_URL`, restart the server.
+   ```env
+   PREDICTION_MARKET_CONTRACT_ADDRESS=0xYourDeployedAddress
+   ```
 
-6. **Run migrations** on Neon: `npm run migrate` and `npm run migrate:tx`.
+   **Restart** the Node server so it reloads `dotenv`.
+
+4. **Owner: `registerMarket`** — **no USDC** required (parimutuel). Only **gas** on Base.
+
+   ```bash
+   npm run register:market -- 3
+   ```
+
+   Reads `fee_bps`, `betting_closes_at`, and outcome count from Postgres, then calls `registerMarket` on `PREDICTION_MARKET_CONTRACT_ADDRESS`.
+
+5. **Resolve on-chain (owner)** when you know the winning agent’s **outcome index** (0-based, `ORDER BY market_outcomes.id`):
+
+   ```bash
+   npm run resolve:market -- 3 0
+   ```
+
+6. **Set env** — `PREDICTION_MARKET_CONTRACT_ADDRESS`, `PROTOCOL_TREASURY_ADDRESS`, `PROTOCOL_FEE_BPS`, `BASE_RPC_URL`, restart the server.
+
+7. **Run migrations** on Neon: `npm run migrate` and `npm run migrate:tx`.
 
 ---
 
@@ -184,10 +202,11 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `BASE_RPC_URL` | For chain | Base JSON-RPC (default `https://mainnet.base.org`) |
 | `BASE_CHAIN_ID` | No | Default `8453` (Base mainnet) |
 | `USDC_CONTRACT_ADDRESS` | No | Base USDC (default canonical) |
-| `PREDICTION_MARKET_CONTRACT_ADDRESS` | Production | Deployed `ChaosPredictionMarket` — **required** for `trade/confirm` |
+| `PREDICTION_MARKET_CONTRACT_ADDRESS` | Production | Deployed `ChaosParimutuelMarket` — **required** for `trade/confirm` |
 | `PROTOCOL_TREASURY_ADDRESS` | Recommended | Protocol fee recipient (shown in transparency API) |
 | `PROTOCOL_FEE_BPS` | No | e.g. `200` = 2% (must match market/contract registration intent) |
 | `ALLOW_UNVERIFIED_TRADES` | No | Set `true` **only in dev** — enables DB-only `POST /markets/trade` |
+| `ADMIN_API_KEY` | **Yes (prod)** | Min **12** characters. Protects `POST /simulation/start`, `POST /simulation/stop`, `POST /markets` (create), and `POST /markets/trade`. Send `Authorization: Bearer <key>` or `X-Admin-Key`. The dashboard prompts once per browser session for start/stop. |
 | `MARKET_CLOSES_AT` | No | ISO 8601 — used by **`npm run seed`** for default `betting_closes_at` |
 
 ---
@@ -211,8 +230,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/simulation/start` | Start the tick loop (alias: `/sandbox/simulation/start`) |
-| `POST` | `/simulation/stop` | Stop the tick loop |
+| `POST` | `/simulation/start` | Start the tick loop (**admin key required**) — alias: `/sandbox/simulation/start` |
+| `POST` | `/simulation/stop` | Stop the tick loop (**admin key required**) |
 | `GET` | `/simulation/status` | Status |
 | `GET` | `/agents` | List agents (alias: `/sandbox/agents`) |
 | `GET` | `/market` | Food/energy prices & tick (alias: `/sandbox/market`) |
@@ -233,10 +252,11 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `GET` | `/markets/transparency` | Rules + fee + treasury + chain info |
 | `GET` | `/markets/config` | `chain_id`, USDC, contract, fee bps, flags |
 | `GET` | `/markets/abi` | Contract ABI JSON for wallet UI |
-| `POST` | `/markets` | Create market + outcomes |
+| `GET` | `/markets/:marketId/precheck?wallet=0x…` | Server-side `markets()`, pool, USDC allowance/balance (avoids flaky wallet RPC on reads) |
+| `POST` | `/markets` | Create market + outcomes (**admin key required**) |
 | `GET` | `/markets/:marketId/outcomes` | Outcomes + reserves |
-| `POST` | `/markets/quote` | CPMM quote (`min_out_suggested`, fees, shares delta) |
-| `POST` | `/markets/trade` | **DB-only trade** — only if `ALLOW_UNVERIFIED_TRADES=true` |
+| `POST` | `/markets/quote` | Parimutuel quote (fee, pool totals, `side: "BET"`) |
+| `POST` | `/markets/trade` | **DB-only trade** — only if `ALLOW_UNVERIFIED_TRADES=true` — **admin key required** |
 | `POST` | `/markets/trade/confirm` | **Production:** `{ txHash }` — index from chain |
 | `GET` | `/markets/fees/daily` | Aggregated protocol fee rows |
 | `GET` | `/positions/:walletAddress` | Positions + marks / PnL helpers |
@@ -249,7 +269,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 - Loads **ethers** (UMD) + contract ABI from **`/markets/abi`**.
 - **`tradeLocked` / `quoteLocked`** — disables actions while a request or tx is in flight.
 - **Chain switch** — prompts to Base if needed.
-- **Buy:** `minOut` from quote’s **`min_out_suggested`** (~1.5% vs expected shares).
+- **Buy:** `minOut` from quote’s **`min_out_suggested`** (~1.5% vs expected shares). **USDC `approve`** requests only the **exact trade amount** (not unlimited), so wallets like Rabby show a normal number instead of a huge “max” allowance.
 - **Sell:** `minOut` from **`min_out_suggested`** (USDC to user after fees, with cushion).
 - After mining: **`POST /markets/trade/confirm`** with real `txHash`.
 - **`api()`** — failed HTTP responses surface as `{ error }` so the UI does not silently succeed.
@@ -258,7 +278,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 ## Economics & fees
 
-- **CPMM** per outcome: virtual **YES/NO** reserves in USDC (6 decimals); math aligned with **`cpmmQuote`** in the backend and **`ChaosPredictionMarket`** on-chain.
+- **Parimutuel** per market: one **shared USDC pool**; **`bet`** adds net stake after fee; **`resolveMarket`** + **`claim`** pay winners pro-rata (see `ChaosParimutuelMarket.sol`).
 - **Fee on gross:** `fee = gross * feeBps / 10000`, `net = gross - fee` — **`net` is what enters the curve** for both buys and sells.
 - **Buys:** Protocol takes fee on gross from the user’s USDC; user receives **shares** subject to slippage `minOut`.
 - **Sells:** After the curve produces **USDC out**, the contract applies a **second fee on proceeds**; user receives **`usdcToUser`** (also exposed on the **`Trade`** event for indexing).
@@ -280,6 +300,7 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 - **Treat as real DeFi** if there is material TVL: **professional audit**, **testnet drills**, **multisig owner**, monitored **`pause()`**, key hygiene.
 - **Owner powers:** `registerMarket`, `pause` / `unpause`, `setTreasury`, pull seed USDC via `registerMarket` (user must **approve** first).
 - **Do not** enable **`ALLOW_UNVERIFIED_TRADES`** in production.
+- Set a strong **`ADMIN_API_KEY`** so only you can start/stop the simulation, create markets via API, or use unverified DB trades. Never commit it; never expose it in frontend bundles (the UI only stores it in **sessionStorage** after you type it for start/stop).
 - **Confirm endpoint** is rate-limited; for heavy traffic consider Redis or a gateway limiter.
 
 ---
@@ -288,12 +309,16 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 
 | Issue | What to check |
 |-------|----------------|
-| `PREDICTION_MARKET_CONTRACT_ADDRESS is not set` | Env + server restart |
+| `PREDICTION_MARKET_CONTRACT_ADDRESS is not set` | Add address to `.env` from `npm run deploy:contract`, **restart** the API (env is read at startup) |
+| UI says “Set PREDICTION_MARKET…” | Same: deploy → `.env` → restart; verify `GET /markets/config` shows `prediction_market_contract` |
 | `No Trade event in this receipt` | Wrong contract, wrong chain, or tx not a `trade()` call |
 | `chainId mismatch` | `BASE_RPC_URL` points to wrong network vs `BASE_CHAIN_ID` |
 | Unique violation on `tx_hash` | Expected on replay — confirm is idempotent |
+| `403` / admin on simulation | Set `ADMIN_API_KEY` on the server; use same value in the dashboard prompt or `Authorization` header |
 | Hardhat “stack too deep” | `viaIR: true` is already set in `hardhat.config.cjs` |
-| UI can’t load ABI | Run compile + copy JSON to `public/abi/ChaosPredictionMarket.json` |
+| `Nothing to compile` from Hardhat | Normal if you didn’t change `.sol` files; artifacts in `contracts/artifacts` are current. Use `npm run compile:contracts:force` to rebuild anyway |
+| `npm run compile:contracts --force` warns about npm “protections” | **`--force` went to npm**, not Hardhat. Use **`npm run compile:contracts:force`** (separate script) for `hardhat compile --force` |
+| UI can’t load ABI | Run `npm run compile:contracts` (copies `ChaosParimutuelMarket.json` to `public/abi/`) |
 
 ---
 
@@ -307,7 +332,8 @@ The API **indexes** on-chain trades into Postgres; it does not custody user fund
 | `npm run migrate` | Market time columns |
 | `npm run migrate:tx` | Unique `tx_hash` index |
 | `npm run seed` | Seed agents + default market |
-| `npm run compile:contracts` | `hardhat compile` |
+| `npm run compile:contracts` | `hardhat compile` (prints **Nothing to compile** when artifacts are already up to date — that’s OK) |
+| `npm run compile:contracts:force` | Full recompile: `hardhat compile --force` |
 
 ---
 

@@ -1,5 +1,6 @@
 import config from '../config/index.js';
-import { getContractAbi } from '../services/chainSync.js';
+import { requireAdmin } from '../middleware/requireAdmin.js';
+import { getContractAbi, getBetPrecheck } from '../services/chainSync.js';
 import {
     listMarkets,
     createMarket,
@@ -46,13 +47,16 @@ export default async function predictionMarketRoutes(fastify) {
         treasury: config.protocolTreasuryAddress || null,
         fee_bps: config.protocolFeeBps,
         allow_unverified_trades: config.allowUnverifiedTrades,
+        market_model: 'parimutuel',
+        /** True when ADMIN_API_KEY is set (min length) — required for simulation control & creating markets via API. */
+        admin_configured: Boolean(config.adminApiKey && String(config.adminApiKey).length >= 12),
     }));
 
     fastify.get('/markets/abi', async () => ({
         abi: getContractAbi(),
     }));
 
-    fastify.post('/markets', async (request, reply) => {
+    fastify.post('/markets', { preHandler: requireAdmin }, async (request, reply) => {
         const { slug, title, settlementTick, feeBps, bettingOpensAt, bettingClosesAt } = request.body || {};
         if (!slug || !title || !settlementTick) {
             return reply.code(400).send({ error: 'slug, title, settlementTick are required' });
@@ -66,6 +70,18 @@ export default async function predictionMarketRoutes(fastify) {
             bettingClosesAt,
         });
         return { market };
+    });
+
+    /** Server-side chain reads (RPC) — use for bet UX so wallet RPC quirks (e.g. Rabby) don’t break reads. */
+    fastify.get('/markets/:marketId/precheck', async (request, reply) => {
+        try {
+            const marketId = Number(request.params.marketId);
+            const wallet = request.query?.wallet || '';
+            const precheck = await getBetPrecheck(marketId, wallet);
+            return { precheck };
+        } catch (error) {
+            return reply.code(400).send({ error: error.message });
+        }
     });
 
     fastify.get('/markets/:marketId/outcomes', async (request) => {
@@ -83,7 +99,8 @@ export default async function predictionMarketRoutes(fastify) {
         }
     });
 
-    fastify.post('/markets/trade', async (request, reply) => {
+    /** DB-only unverified trades — admin only (same key as simulation). */
+    fastify.post('/markets/trade', { preHandler: requireAdmin }, async (request, reply) => {
         try {
             const trade = await executeTrade(request.body || {});
             return { trade };

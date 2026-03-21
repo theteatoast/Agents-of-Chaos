@@ -11,6 +11,8 @@ const config = {
   protocolFeeBps: parseInt(process.env.PROTOCOL_FEE_BPS || '200', 10),
   predictionMarketContractAddress: process.env.PREDICTION_MARKET_CONTRACT_ADDRESS || '',
   allowUnverifiedTrades: process.env.ALLOW_UNVERIFIED_TRADES === 'true',
+  /** Min 12 chars. Required for: simulation start/stop, POST /markets, POST /markets/trade (when enabled). */
+  adminApiKey: process.env.ADMIN_API_KEY || '',
   tickInterval: 20000, // 20s — safe for Groq free tier (~30 req/min)
 };
 

@@ -163,10 +163,16 @@
       <div class="panel-header">
         <div class="panel-title-group">
           <h2 class="panel-title" id="markets-heading">Bet on who ends richest</h2>
-          <p class="panel-lede">Pick a market, then Buy or Sell Yes/No on an agent — USDC on Base (not agent credits).</p>
+          <p class="panel-lede">Pick a market and stake USDC on which agent wins (parimutuel pool — bettors fund liquidity; fee on each bet to treasury).</p>
         </div>
         <span class="panel-badge" id="wallet-badge">Wallet disconnected</span>
       </div>
+    <div class="pm-contract-warning" id="pm-contract-warning" hidden>
+      <strong>No contract on the server.</strong> Deploy <code>ChaosParimutuelMarket</code> to Base, then set
+      <code>PREDICTION_MARKET_CONTRACT_ADDRESS=0x…</code> in your <code>.env</code> and <strong>restart</strong> the API
+      (<code>npm run deploy:contract</code>). Owner: <code>registerMarket</code> (gas only — no seed USDC) matching Postgres
+      <code>prediction_markets.id</code> and outcome count.
+    </div>
     <div class="market-meta" id="market-meta" aria-live="polite"></div>
     <div class="countdown-row" id="countdown-row" hidden>
       <span class="countdown-label">Betting closes in</span>
@@ -191,11 +197,10 @@
       <select id="market-select" class="pm-select pm-select-full" aria-label="Betting market"></select>
 
       <div class="pm-tabs-row">
-        <div class="pm-tabs" role="tablist">
-          <button type="button" class="pm-tab pm-tab-active" id="tab-buy" data-mode="buy" role="tab" aria-selected="true">Buy</button>
-          <button type="button" class="pm-tab" id="tab-sell" data-mode="sell" role="tab" aria-selected="false">Sell</button>
+        <div class="pm-tabs pm-tabs-single" role="tablist" aria-label="Bet mode">
+          <button type="button" class="pm-tab pm-tab-active" id="tab-buy" data-mode="buy" role="tab" aria-selected="true">Bet (add stake)</button>
         </div>
-        <select id="order-type-select" class="pm-order-select" aria-label="Order type" title="Order type">
+        <select id="order-type-select" class="pm-order-select" aria-label="Order type" title="Market order">
           <option value="market">Market</option>
         </select>
       </div>
@@ -203,15 +208,10 @@
       <label class="pm-field-label" for="outcome-select">Agent outcome</label>
       <select id="outcome-select" class="pm-select pm-select-full" aria-label="Agent to bet on"></select>
 
-      <div class="pm-yesno" role="group" aria-label="Yes or No">
-        <button type="button" class="pm-yesno-btn pm-yesno-yes pm-yesno-active" id="btn-yes" data-yesno="yes">
-          <span class="pm-yesno-label">Yes</span>
-          <span class="pm-yesno-price" id="price-yes">—</span>
-        </button>
-        <button type="button" class="pm-yesno-btn pm-yesno-no" id="btn-no" data-yesno="no">
-          <span class="pm-yesno-label">No</span>
-          <span class="pm-yesno-price" id="price-no">—</span>
-        </button>
+      <div class="pm-pool-share" aria-live="polite">
+        <div class="pm-pool-share-label">Parimutuel pool share (if this agent wins)</div>
+        <div class="pm-pool-share-main" id="pool-share-line">—</div>
+        <div class="pm-pool-share-sub" id="pool-share-sub"></div>
       </div>
 
       <div class="pm-amount-block">
@@ -233,8 +233,8 @@
         <div class="pm-quote-line" id="quote-preview">Enter a USDC amount for an estimate.</div>
       </div>
 
-      <button type="button" class="pm-trade-btn" id="btn-trade">Trade</button>
-      <p class="pm-terms">By trading, you agree to the <a href="#" onclick="return false">Terms of Use</a>.</p>
+      <button type="button" class="pm-trade-btn" id="btn-trade">Place bet</button>
+      <p class="pm-terms">Bets use USDC on Base. By betting, you agree to the <a href="#" onclick="return false">Terms of Use</a>.</p>
       <button type="button" class="pm-refresh-pos" onclick="loadPositions()">Refresh positions</button>
     </div>
 
@@ -245,7 +245,7 @@
       </div>
       <div class="betting-card betting-card-wide">
         <h3>Your positions</h3>
-        <p class="positions-hint">Est. value uses pool mid price (display only). Resolution uses <strong>richest agent in the economy</strong> (tick snapshot), not this mark. Exit before the deadline: <strong>Sell</strong> + Yes or No.</p>
+        <p class="positions-hint">Parimutuel: <strong>net stake</strong> on your pick. After the market resolves on-chain, winners <strong>claim USDC</strong> from the contract — not a sell button here.</p>
         <div class="positions-table-wrap" id="positions-wrap">
           <table class="positions-table" id="positions-table" aria-label="Open positions">
             <thead>

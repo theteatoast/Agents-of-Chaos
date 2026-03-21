@@ -1,17 +1,9 @@
 import { ethers } from 'ethers';
 import pool from '../db/index.js';
 import config from '../config/index.js';
-import { fetchTradeEventFromTx, readReservesOnChain, formatSignedInt256ToNumber } from './chainSync.js';
+import { fetchBetEventFromTx, readMarketStakeTotals } from './chainSync.js';
 
-const SIDES = new Set(['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO']);
-
-/** Rough mid price for YES (display only): share of virtual no-reserve in pool. */
-export function impliedYesPrice(reserveYes, reserveNo) {
-    const ry = Number(reserveYes);
-    const rn = Number(reserveNo);
-    if (!Number.isFinite(ry) || !Number.isFinite(rn) || ry + rn <= 0) return 0.5;
-    return rn / (ry + rn);
-}
+const SIDES = new Set(['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO', 'BET']);
 
 export async function getDbNow() {
     const { rows } = await pool.query(`SELECT NOW() AS now`);
@@ -24,59 +16,6 @@ export function isTradingOpen(market, nowDate) {
     const close = new Date(market.betting_closes_at);
     const now = new Date(nowDate);
     return now < close;
-}
-
-function cpmmQuote({ reserveYes, reserveNo, side, usdcAmount }) {
-    const amount = Number(usdcAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-        throw new Error('usdcAmount must be positive');
-    }
-
-    const k = reserveYes * reserveNo;
-    if (side === 'BUY_YES') {
-        const newYes = reserveYes + amount;
-        const newNo = k / newYes;
-        return { sharesDelta: reserveNo - newNo, newYes, newNo };
-    }
-    if (side === 'BUY_NO') {
-        const newNo = reserveNo + amount;
-        const newYes = k / newNo;
-        return { sharesDelta: reserveYes - newYes, newYes, newNo };
-    }
-    if (side === 'SELL_YES') {
-        if (amount >= reserveYes) throw new Error('Sell amount too large for pool depth');
-        const newYes = reserveYes - amount;
-        const newNo = k / newYes;
-        return { sharesDelta: -(newNo - reserveNo), newYes, newNo };
-    }
-    if (side === 'SELL_NO') {
-        if (amount >= reserveNo) throw new Error('Sell amount too large for pool depth');
-        const newNo = reserveNo - amount;
-        const newYes = k / newNo;
-        return { sharesDelta: -(newYes - reserveYes), newYes, newNo };
-    }
-    throw new Error('Unsupported side');
-}
-
-/** Matches ChaosPredictionMarket._usdcOutFromSell (USDC 6-decimal float units). */
-export function usdcOutFromSell(reserveYes, reserveNo, side, net) {
-    const ry = Number(reserveYes);
-    const rn = Number(reserveNo);
-    const n = Number(net);
-    const k = ry * rn;
-    if (side === 'SELL_YES') {
-        if (n >= ry) throw new Error('Sell amount too large for pool depth');
-        const newYes = ry - n;
-        const newNo = k / newYes;
-        return newNo - rn;
-    }
-    if (side === 'SELL_NO') {
-        if (n >= rn) throw new Error('Sell amount too large for pool depth');
-        const newNo = rn - n;
-        const newYes = k / newNo;
-        return newYes - ry;
-    }
-    throw new Error('usdcOutFromSell only applies to SELL_* sides');
 }
 
 export async function listMarkets() {
@@ -109,13 +48,25 @@ export async function getMarketOutcomes(marketId) {
          ORDER BY mo.id`,
         [marketId]
     );
+    let chainTotals = null;
+    try {
+        if (config.predictionMarketContractAddress) {
+            chainTotals = await readMarketStakeTotals(marketId);
+        }
+    } catch {
+        chainTotals = null;
+    }
+    const poolSum = chainTotals ? chainTotals.reduce((a, b) => a + b, 0) : 0;
     return rows.map((o, idx) => {
-        const pYes = impliedYesPrice(o.reserve_yes, o.reserve_no);
+        const stakeOnOutcome = (chainTotals?.[idx] ?? Number(o.reserve_yes)) || 0;
+        const implied = poolSum > 0 ? stakeOnOutcome / poolSum : rows.length > 0 ? 1 / rows.length : 0;
         return {
             ...o,
             outcome_index: idx,
-            implied_yes: +pYes.toFixed(6),
-            implied_no: +(1 - pYes).toFixed(6),
+            pool_stake_usdc: +stakeOnOutcome.toFixed(6),
+            implied_pool_share: +implied.toFixed(6),
+            implied_yes: +implied.toFixed(6),
+            implied_no: +(1 - implied).toFixed(6),
         };
     });
 }
@@ -166,115 +117,110 @@ export async function createMarket({
     }
 }
 
-export async function quoteTrade({ marketId, outcomeId, side, usdcAmount }) {
-    if (!SIDES.has(side)) throw new Error('Invalid side');
+/** Parimutuel quote: fee on gross → treasury; net increases the shared pool. */
+export async function quoteBet({ marketId, outcomeId, usdcAmount }) {
+    const gross = Number(usdcAmount);
+    if (!Number.isFinite(gross) || gross <= 0) throw new Error('usdcAmount must be positive');
+
     const market = await getMarketById(marketId);
     if (!market) throw new Error('Market not found');
     if (market.status !== 'OPEN') throw new Error('Market is not open');
     const now = await getDbNow();
     if (!isTradingOpen(market, now)) {
-        throw new Error('Trading is closed for this market (deadline passed). You can still view positions until resolution.');
+        throw new Error('Trading is closed for this market (deadline passed).');
     }
 
-    const { rows } = await pool.query('SELECT * FROM market_outcomes WHERE id = $1 AND market_id = $2', [outcomeId, marketId]);
-    const outcome = rows[0];
-    if (!outcome) throw new Error('Outcome not found');
+    const { rows } = await pool.query(
+        `SELECT id, ROW_NUMBER() OVER (ORDER BY id) - 1 AS outcome_index
+         FROM market_outcomes WHERE market_id = $1 ORDER BY id`,
+        [marketId]
+    );
+    const row = rows.find((r) => r.id === outcomeId);
+    if (!row) throw new Error('Outcome not found');
+    const outcomeIndex = Number(row.outcome_index);
 
-    const gross = Number(usdcAmount);
     const feeBps = market.fee_bps;
     const feeRate = feeBps / 10000;
-    /** Same as contract: fee on gross, net = gross - fee (used as curve input for both buys and sells). */
     const feeOnGrossUsdc = gross * feeRate;
     const netAmount = gross - feeOnGrossUsdc;
-    const reserveYes = Number(outcome.reserve_yes);
-    const reserveNo = Number(outcome.reserve_no);
-    const result = cpmmQuote({ reserveYes, reserveNo, side, usdcAmount: netAmount });
 
-    const isBuy = side === 'BUY_YES' || side === 'BUY_NO';
-    let feeOnProceedsUsdc = 0;
-    let usdcToUser = 0;
-    let feeEmittedUsdc;
-
-    if (isBuy) {
-        /** Contract emit Trade: fee = fee on gross; treasury receives this USDC from user. */
-        feeEmittedUsdc = feeOnGrossUsdc;
-        const avgPrice = Math.abs(result.sharesDelta) > 0 ? Math.abs(netAmount / result.sharesDelta) : 0;
-        return {
-            marketId,
-            outcomeId,
-            side,
-            grossUsdc: gross,
-            feeUsdc: feeEmittedUsdc,
-            fee_on_gross_usdc: feeOnGrossUsdc,
-            fee_on_proceeds_usdc: 0,
-            fee_bps: feeBps,
-            net_to_pool_usdc: netAmount,
-            netUsdc: netAmount,
-            usdc_to_user: 0,
-            protocol_fee_destination: config.protocolTreasuryAddress || 'configure PROTOCOL_TREASURY_ADDRESS',
-            sharesDelta: result.sharesDelta,
-            avgPrice,
-            nextReserves: { yes: result.newYes, no: result.newNo },
-            min_out_kind: 'shares',
-            min_out_suggested: Math.abs(result.sharesDelta) * 0.985,
-            disclosure: {
-                summary:
-                    'Buy: fee on gross USDC goes to treasury; net goes into the CPMM (matches on-chain trade()).',
-            },
-        };
+    let totals = [];
+    try {
+        totals = await readMarketStakeTotals(marketId);
+    } catch {
+        totals = [];
     }
-
-    /** Sell path: second fee on proceeds (contract _usdcOutFromSell then feeOut). */
-    const usdcOutGross = usdcOutFromSell(reserveYes, reserveNo, side, netAmount);
-    feeOnProceedsUsdc = usdcOutGross * feeRate;
-    usdcToUser = usdcOutGross - feeOnProceedsUsdc;
-    /** Trade event fee field on-chain is feeOut (proceeds fee), not fee on gross. */
-    feeEmittedUsdc = feeOnProceedsUsdc;
-    const avgPrice =
-        Math.abs(result.sharesDelta) > 0 ? Math.abs(usdcToUser / result.sharesDelta) : 0;
+    while (totals.length < rows.length) totals.push(0);
+    const poolBefore = totals.reduce((a, b) => a + b, 0);
+    const stakeBefore = totals[outcomeIndex] ?? 0;
+    const poolAfter = poolBefore + netAmount;
+    const stakeAfter = stakeBefore + netAmount;
+    const shareOfPoolIfWins = poolAfter > 0 ? stakeAfter / poolAfter : 0;
 
     return {
         marketId,
         outcomeId,
-        side,
+        outcome_index: outcomeIndex,
+        side: 'BET',
         grossUsdc: gross,
-        feeUsdc: feeEmittedUsdc,
+        feeUsdc: feeOnGrossUsdc,
         fee_on_gross_usdc: feeOnGrossUsdc,
-        fee_on_proceeds_usdc: feeOnProceedsUsdc,
         fee_bps: feeBps,
         net_to_pool_usdc: netAmount,
         netUsdc: netAmount,
-        usdc_out_gross: usdcOutGross,
-        usdc_to_user: usdcToUser,
+        pool_total_before_usdc: poolBefore,
+        pool_total_after_usdc: poolAfter,
+        stake_on_outcome_before_usdc: stakeBefore,
+        stake_on_outcome_after_usdc: stakeAfter,
+        implied_share_of_pool_if_this_outcome_wins: +shareOfPoolIfWins.toFixed(8),
+        sharesDelta: netAmount,
+        avgPrice: netAmount > 0 ? 1 : 0,
+        min_out_kind: 'none',
+        min_out_suggested: 0,
+        parimutuel: true,
         protocol_fee_destination: config.protocolTreasuryAddress || 'configure PROTOCOL_TREASURY_ADDRESS',
-        sharesDelta: result.sharesDelta,
-        avgPrice,
-        nextReserves: { yes: result.newYes, no: result.newNo },
-        min_out_kind: 'usdc_to_user',
-        min_out_suggested: usdcToUser * 0.985,
         disclosure: {
             summary:
-                'Sell: gross notional has fee-on-gross applied to net curve size (same as contract); proceeds then pay a second protocol fee; you receive usdc_to_user. Indexed Trade event fee = fee on proceeds.',
+                'Parimutuel: fee on gross USDC goes to treasury; net is added to the on-chain pool. If this outcome wins, winners split the full pool pro-rata by net stake on the winning outcome (see contract).',
         },
     };
+}
+
+/** Back-compat: `side` ignored for parimutuel (bet on selected outcome). */
+export async function quoteTrade({ marketId, outcomeId, side, usdcAmount }) {
+    if (side && !SIDES.has(side)) throw new Error('Invalid side');
+    return quoteBet({ marketId, outcomeId, usdcAmount });
 }
 
 export async function executeTrade({ walletAddress, marketId, outcomeId, side, usdcAmount, txHash }) {
     if (!config.allowUnverifiedTrades) {
         throw new Error(
-            'Unverified DB trades are disabled. Trade USDC on-chain via the deployed contract, then POST /markets/trade/confirm with the tx hash.'
+            'Unverified DB trades are disabled. Bet on-chain, then POST /markets/trade/confirm with the tx hash.'
         );
     }
-    const quote = await quoteTrade({ marketId, outcomeId, side, usdcAmount });
+    const quote = await quoteBet({ marketId, outcomeId, usdcAmount });
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        await client.query(
-            `UPDATE market_outcomes
-             SET reserve_yes = $1, reserve_no = $2
-             WHERE id = $3`,
-            [quote.nextReserves.yes, quote.nextReserves.no, outcomeId]
+        let totals = [];
+        try {
+            totals = await readMarketStakeTotals(marketId);
+        } catch {
+            totals = [];
+        }
+        const { rows: oc } = await client.query(
+            `SELECT id FROM market_outcomes WHERE market_id = $1 ORDER BY id`,
+            [marketId]
         );
+        while (totals.length < oc.length) totals.push(0);
+        const idx = Number(quote.outcome_index);
+        totals[idx] = quote.stake_on_outcome_after_usdc;
+        for (let i = 0; i < oc.length; i++) {
+            await client.query(`UPDATE market_outcomes SET reserve_yes = $1, reserve_no = 0 WHERE id = $2`, [
+                totals[i] ?? 0,
+                oc[i].id,
+            ]);
+        }
 
         await client.query(
             `INSERT INTO market_positions (wallet_address, market_id, outcome_id, shares, total_cost_usdc, updated_at)
@@ -284,7 +230,7 @@ export async function executeTrade({ walletAddress, marketId, outcomeId, side, u
                shares = market_positions.shares + EXCLUDED.shares,
                total_cost_usdc = market_positions.total_cost_usdc + EXCLUDED.total_cost_usdc,
                updated_at = NOW()`,
-            [walletAddress.toLowerCase(), marketId, outcomeId, quote.sharesDelta, quote.netUsdc]
+            [walletAddress.toLowerCase(), marketId, outcomeId, quote.netUsdc, quote.grossUsdc]
         );
 
         const tradeInsert = await client.query(
@@ -292,7 +238,17 @@ export async function executeTrade({ walletAddress, marketId, outcomeId, side, u
             (wallet_address, market_id, outcome_id, side, usdc_amount, shares_delta, avg_price, fee_usdc, tx_hash, block_timestamp)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
             RETURNING *`,
-            [walletAddress.toLowerCase(), marketId, outcomeId, side, quote.grossUsdc, quote.sharesDelta, quote.avgPrice, quote.feeUsdc, txHash || null]
+            [
+                walletAddress.toLowerCase(),
+                marketId,
+                outcomeId,
+                'BET',
+                quote.grossUsdc,
+                quote.netUsdc,
+                quote.avgPrice,
+                quote.feeUsdc,
+                txHash || null,
+            ]
         );
 
         await client.query(
@@ -310,7 +266,7 @@ export async function executeTrade({ walletAddress, marketId, outcomeId, side, u
     }
 }
 
-/** Apply indexed DB state from a mined Base tx that emitted `Trade` on the ChaosPredictionMarket contract. */
+/** Index a mined Base tx that emitted `BetPlaced` on ChaosParimutuelMarket. */
 export async function syncTradeFromTxHash(txHash) {
     const normalizedHash = txHash?.toLowerCase();
     if (!normalizedHash || !normalizedHash.startsWith('0x')) throw new Error('Invalid tx hash');
@@ -320,31 +276,30 @@ export async function syncTradeFromTxHash(txHash) {
         return { duplicate: true, tradeId: dup.rows[0].id };
     }
 
-    const ev = await fetchTradeEventFromTx(normalizedHash);
+    const ev = await fetchBetEventFromTx(normalizedHash);
     const wallet = String(ev.user).toLowerCase();
     const outcomeId = await getOutcomeIdByIndex(ev.marketId, ev.outcomeIndex);
-    const sideNames = ['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO'];
-    const side = sideNames[ev.side];
-    if (!side) throw new Error('Invalid trade side in event');
 
     const grossUsdc = Number(ethers.formatUnits(ev.grossUsdc, 6));
     const feeUsdc = Number(ethers.formatUnits(ev.feeUsdc, 6));
     const netUsdc = Number(ethers.formatUnits(ev.netUsdc, 6));
-    const usdcToUser = Number(ethers.formatUnits(ev.usdcToUser, 6));
-    const sharesDelta = formatSignedInt256ToNumber(ev.sharesDelta, 6);
+    const avgPrice = netUsdc > 0 ? 1 : 0;
 
-    const reserves = await readReservesOnChain(ev.marketId, ev.outcomeIndex);
-    const costDelta = ev.side < 2 ? netUsdc : -usdcToUser;
-    const avgPrice = Math.abs(sharesDelta) > 1e-12 ? Math.abs(netUsdc / sharesDelta) : 0;
+    const totals = await readMarketStakeTotals(ev.marketId);
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        await client.query(`UPDATE market_outcomes SET reserve_yes = $1, reserve_no = $2 WHERE id = $3`, [
-            reserves.reserve_yes,
-            reserves.reserve_no,
-            outcomeId,
-        ]);
+        const { rows: oc } = await client.query(
+            `SELECT id FROM market_outcomes WHERE market_id = $1 ORDER BY id`,
+            [ev.marketId]
+        );
+        for (let i = 0; i < oc.length; i++) {
+            await client.query(`UPDATE market_outcomes SET reserve_yes = $1, reserve_no = 0 WHERE id = $2`, [
+                totals[i] ?? 0,
+                oc[i].id,
+            ]);
+        }
 
         await client.query(
             `INSERT INTO market_positions (wallet_address, market_id, outcome_id, shares, total_cost_usdc, updated_at)
@@ -352,9 +307,9 @@ export async function syncTradeFromTxHash(txHash) {
              ON CONFLICT (wallet_address, market_id, outcome_id)
              DO UPDATE SET
                shares = market_positions.shares + $4,
-               total_cost_usdc = GREATEST(0, market_positions.total_cost_usdc + $6),
+               total_cost_usdc = market_positions.total_cost_usdc + $6,
                updated_at = NOW()`,
-            [wallet, ev.marketId, outcomeId, sharesDelta, costDelta, costDelta]
+            [wallet, ev.marketId, outcomeId, netUsdc, grossUsdc, grossUsdc]
         );
 
         const tradeInsert = await client.query(
@@ -362,7 +317,7 @@ export async function syncTradeFromTxHash(txHash) {
             (wallet_address, market_id, outcome_id, side, usdc_amount, shares_delta, avg_price, fee_usdc, tx_hash, block_timestamp)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
             RETURNING *`,
-            [wallet, ev.marketId, outcomeId, side, grossUsdc, sharesDelta, avgPrice, feeUsdc, normalizedHash]
+            [wallet, ev.marketId, outcomeId, 'BET', grossUsdc, netUsdc, avgPrice, feeUsdc, normalizedHash]
         );
 
         await client.query(`INSERT INTO protocol_fees (market_id, trade_id, fee_usdc) VALUES ($1, $2, $3)`, [
@@ -397,17 +352,16 @@ export async function getPositions(walletAddress) {
         [walletAddress.toLowerCase()]
     );
     return rows.map((row) => {
-        const pYes = impliedYesPrice(row.reserve_yes, row.reserve_no);
-        const shares = Number(row.shares);
+        const netStake = Number(row.shares);
         const cost = Number(row.total_cost_usdc);
-        const markValue = Math.max(0, shares * pYes);
-        const avgEntry = shares !== 0 ? cost / shares : 0;
+        const poolOnOutcome = Number(row.reserve_yes) || 0;
+        const impliedShare = poolOnOutcome > 0 ? netStake / poolOnOutcome : 0;
         return {
             ...row,
-            implied_yes: +pYes.toFixed(6),
-            estimated_mark_value_usdc: +markValue.toFixed(6),
-            avg_entry_usdc_per_share: +avgEntry.toFixed(8),
-            unrealized_pnl_usdc: +(markValue - cost).toFixed(6),
+            net_stake_usdc: +netStake.toFixed(6),
+            cost_basis_gross_usdc: +cost.toFixed(6),
+            implied_share_of_outcome_pool: +impliedShare.toFixed(6),
+            note: 'Parimutuel: claim winnings on-chain via contract.claim(marketId) after resolution.',
         };
     });
 }
@@ -491,15 +445,15 @@ export function getTransparencyPayload() {
         protocol_fee_bps: feeBps,
         protocol_fee_percent: feeBps / 100,
         protocol_treasury: config.protocolTreasuryAddress || null,
+        model: 'parimutuel',
         rules: [
-            'Agents live in a simulated economy (credits, food, energy); that economy has no direct cash value — it is the game you are betting on.',
-            'USDC on Base is used for trades against the on-chain / recorded liquidity model: you are betting on which agent ends richest.',
-            'A protocol fee is taken from each trade’s gross USDC; the rest goes to the pool for that trade.',
-            'You can quote and trade (buy or sell) while the market is OPEN and before the betting deadline.',
-            'When the deadline passes, new trades stop. The winning agent is whoever has the highest credits in the economy at resolution (latest tick snapshot).',
-            'The platform earns revenue only from the configured fee on trades, not from hidden spreads.',
-            'Trades are executed on-chain in USDC; this API indexes confirmed transactions — do not trust off-chain balance changes without a matching tx.',
-            'Quote endpoint matches the contract: buys pay fee on gross to treasury; sells apply fee-on-gross to the curve size and a second fee on proceeds before USDC is sent to you.',
+            'Agents live in a simulated economy (credits, food, energy); you bet USDC on which agent ends richest.',
+            'Parimutuel: all bettors’ USDC (after protocol fee) forms the pool — no house seed liquidity.',
+            'Protocol fee is taken from each bet’s gross USDC and sent to the configured treasury on-chain.',
+            'After the betting deadline, the richest agent in the sandbox wins; the contract owner resolves the matching outcome index on-chain.',
+            'Winners claim USDC from the contract via claim(marketId); payout is pro-rata by net stake on the winning outcome.',
+            'This API only indexes confirmed on-chain bets — verify balances on BaseScan.',
+            'Creating markets and simulation control may require admin credentials.',
         ],
         explorer_base: 'https://basescan.org',
     };
@@ -516,47 +470,8 @@ export async function getProtocolFeesDaily() {
     return rows;
 }
 
-export async function claimWinnings(walletAddress, marketId) {
-    const normalized = walletAddress.toLowerCase();
-    const market = await getMarketById(marketId);
-    if (!market) throw new Error('Market not found');
-    if (market.status !== 'RESOLVED') throw new Error('Market not resolved yet');
-    if (!market.winning_agent_id) throw new Error('Winning outcome unavailable');
-
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        const winnerRows = await client.query(
-            `SELECT id FROM market_outcomes WHERE market_id = $1 AND agent_id = $2`,
-            [marketId, market.winning_agent_id]
-        );
-        const winningOutcomeId = winnerRows.rows[0]?.id;
-        if (!winningOutcomeId) throw new Error('Winning outcome not found');
-
-        const posRows = await client.query(
-            `SELECT id, shares
-             FROM market_positions
-             WHERE wallet_address = $1 AND market_id = $2 AND outcome_id = $3`,
-            [normalized, marketId, winningOutcomeId]
-        );
-        const position = posRows.rows[0];
-        if (!position || Number(position.shares) <= 0) {
-            throw new Error('No claimable winning shares');
-        }
-
-        const payoutUsdc = Number(position.shares);
-        await client.query(
-            `UPDATE market_positions
-             SET shares = 0, total_cost_usdc = 0, updated_at = NOW()
-             WHERE id = $1`,
-            [position.id]
-        );
-        await client.query('COMMIT');
-        return { payoutUsdc, marketId, outcomeId: winningOutcomeId };
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        client.release();
-    }
+export async function claimWinnings(_walletAddress, _marketId) {
+    throw new Error(
+        'Payouts are claimed on-chain only: call ChaosParimutuelMarket.claim(marketId) from your wallet after the owner calls resolveMarket. USDC is not sent by this API.'
+    );
 }

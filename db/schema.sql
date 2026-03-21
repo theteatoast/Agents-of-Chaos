@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS market_outcomes (
   id SERIAL PRIMARY KEY,
   market_id INT NOT NULL REFERENCES prediction_markets(id) ON DELETE CASCADE,
   agent_id INT NOT NULL REFERENCES agents(id),
-  reserve_yes DOUBLE PRECISION NOT NULL DEFAULT 1000,
-  reserve_no DOUBLE PRECISION NOT NULL DEFAULT 1000,
+    reserve_yes DOUBLE PRECISION NOT NULL DEFAULT 1,
+    reserve_no DOUBLE PRECISION NOT NULL DEFAULT 1,
   UNIQUE (market_id, agent_id)
 );
 
