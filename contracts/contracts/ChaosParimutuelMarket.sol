@@ -51,6 +51,7 @@ contract ChaosParimutuelMarket is Ownable, Pausable, ReentrancyGuard {
     );
     event MarketResolved(uint256 indexed marketId, uint256 winningOutcomeIndex);
     event Claimed(address indexed user, uint256 indexed marketId, uint256 outcomeIndex, uint256 amount);
+    event StakeExited(address indexed user, uint256 indexed marketId, uint256 outcomeIndex, uint256 netUsdcReturned);
     event TreasuryUpdated(address indexed treasury);
 
     error BadMarket();
@@ -60,6 +61,7 @@ contract ChaosParimutuelMarket is Ownable, Pausable, ReentrancyGuard {
     error FeeTooHigh();
     error NothingToClaim();
     error NoWinningStake();
+    error NothingToExit();
 
     constructor(IERC20 _usdc, address _treasury) Ownable(msg.sender) {
         usdc = _usdc;
@@ -125,6 +127,25 @@ contract ChaosParimutuelMarket is Ownable, Pausable, ReentrancyGuard {
         totalPool[marketId] += net;
 
         emit BetPlaced(msg.sender, marketId, outcomeIndex, grossUsdc, fee, net);
+    }
+
+    /// @notice Withdraw your full net stake on an outcome before betting closes (USDC back to wallet). No extra fee.
+    function exitStake(uint256 marketId, uint256 outcomeIndex) external nonReentrant whenNotPaused {
+        Market storage m = markets[marketId];
+        if (!m.active || m.resolved) revert BadMarket();
+        if (block.timestamp >= m.closeTime) revert TradingClosed();
+        if (outcomeIndex >= m.outcomeCount) revert BadOutcome();
+
+        uint256 s = stakeOf[marketId][outcomeIndex][msg.sender];
+        if (s == 0) revert NothingToExit();
+
+        stakeOf[marketId][outcomeIndex][msg.sender] = 0;
+        totalStakeOnOutcome[marketId][outcomeIndex] -= s;
+        totalPool[marketId] -= s;
+
+        usdc.safeTransfer(msg.sender, s);
+
+        emit StakeExited(msg.sender, marketId, outcomeIndex, s);
     }
 
     /// @notice Lock resolution to winning outcome index (same ordering as DB `market_outcomes`).

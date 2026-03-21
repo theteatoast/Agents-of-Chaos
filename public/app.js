@@ -226,7 +226,7 @@ function disconnectWallet() {
   walletLabel = '';
   updateWalletChrome();
   const tbody = document.getElementById('positions-tbody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">Connect wallet to view positions</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="positions-empty">Connect wallet to view positions</td></tr>';
   cachedPositions = [];
 }
 
@@ -1008,6 +1008,107 @@ async function ensureWalletOnChain(eth, cfg) {
   return provider;
 }
 
+/** Full withdrawal of net stake on this outcome before betting closes (requires contract with exitStake). */
+async function exitStakePosition(marketId, outcomeIndex) {
+  if (tradeLocked) return;
+  if (!connectedWallet) {
+    alert('Connect wallet first');
+    return;
+  }
+  const mid = Number(marketId);
+  const oid = Number(outcomeIndex);
+  if (!Number.isFinite(mid) || !Number.isFinite(oid) || oid < 0) return;
+
+  const m = cachedMarkets.find((x) => x.id === mid);
+  if (!m || m.status !== 'OPEN' || !m.trading_open) {
+    alert(
+      'Betting is closed for this market. You cannot exit on-chain anymore — if the market resolved and you won, claim USDC with claim(marketId) on the contract.'
+    );
+    return;
+  }
+
+  tradeLocked = true;
+  try {
+    const eth = getEthers();
+    if (!getEip1193Provider()) throw new Error('No wallet — connect a wallet first');
+
+    let cfg = marketConfig && !marketConfig.error ? marketConfig : null;
+    if (!cfg) {
+      const c = await api('/markets/config');
+      if (c.error) throw new Error(c.error);
+      cfg = c;
+      marketConfig = c;
+    }
+    if (!cfg.prediction_market_contract) {
+      throw new Error('Server has no PREDICTION_MARKET_CONTRACT_ADDRESS.');
+    }
+
+    const provider = await ensureWalletOnChain(eth, cfg);
+    const signer = await provider.getSigner();
+    const user = (await signer.getAddress()).toLowerCase();
+    if (user !== connectedWallet) throw new Error('Connected wallet mismatch — reconnect.');
+
+    const abiRes = await api('/markets/abi');
+    if (abiRes.error || !abiRes.abi) throw new Error(abiRes.error || 'Contract ABI not available');
+    const marketContract = new eth.Contract(cfg.prediction_market_contract, abiRes.abi, signer);
+
+    const sim = await api(`/markets/${mid}/simulate-exit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ outcomeIndex: oid, wallet: user }),
+    });
+    if (sim.error) throw new Error(sim.error);
+
+    let exitOverrides = undefined;
+    if (sim.gas_limit) {
+      const raw = BigInt(sim.gas_limit);
+      const withHeadroom = (raw * 125n) / 100n;
+      const cap = 5000000n;
+      exitOverrides = { gasLimit: withHeadroom > cap ? cap : withHeadroom };
+    }
+
+    let tx;
+    try {
+      tx = exitOverrides
+        ? await marketContract.exitStake(mid, oid, exitOverrides)
+        : await marketContract.exitStake(mid, oid);
+    } catch (betErr) {
+      const msg = String(betErr?.message || betErr?.shortMessage || betErr || '');
+      if (/missing revert data|CALL_EXCEPTION/i.test(msg)) {
+        throw new Error(
+          'exitStake failed. Deploy the latest contract (with exitStake), confirm you have a stake on this outcome, and betting is still open on-chain.\n\n' +
+            msg
+        );
+      }
+      throw betErr;
+    }
+    const receipt = await tx.wait();
+    const st = receipt?.status;
+    const ok =
+      st === 1 ||
+      st === 1n ||
+      (typeof st === 'string' && st === '0x1') ||
+      Number(st) === 1;
+    if (!ok) throw new Error('Transaction reverted on-chain (see BaseScan).');
+
+    const confirm = await api('/markets/trade/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txHash: receipt.hash }),
+    });
+    if (confirm.error) throw new Error(confirm.error);
+
+    alert('Stake exited — USDC returned to your wallet (check wallet balance; you still pay gas in ETH).');
+    await loadPositions();
+    await loadMarkets();
+  } catch (e) {
+    console.error(e);
+    alert(e?.reason || e?.message || e?.shortMessage || String(e));
+  } finally {
+    tradeLocked = false;
+  }
+}
+
 async function placeTrade() {
   if (tradeLocked) return;
   if (betMode !== 'buy') {
@@ -1229,7 +1330,7 @@ function renderPositionsTable(positions) {
   const tbody = document.getElementById('positions-tbody');
   if (!tbody) return;
   if (!positions || !positions.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">No open positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="positions-empty">No open positions</td></tr>';
     return;
   }
   tbody.innerHTML = positions.map((p) => {
@@ -1237,6 +1338,14 @@ function renderPositionsTable(positions) {
     const agent = escapeHtml(p.agent_name || '');
     const unreal = Number(p.unrealized_pnl_usdc ?? 0);
     const unrealClass = unreal >= 0 ? 'pnl-pos' : 'pnl-neg';
+    const canExit =
+      p.status === 'OPEN' &&
+      p.trading_open === true &&
+      Number(p.shares) > 0 &&
+      Number(p.outcome_index) >= 0;
+    const exitCell = canExit
+      ? `<button type="button" class="pm-exit-stake" onclick="exitStakePosition(${Number(p.market_id)}, ${Number(p.outcome_index)})">Exit stake</button>`
+      : '<span class="positions-action-muted">—</span>';
     return `<tr>
       <td>${title}</td>
       <td>${agent}</td>
@@ -1245,6 +1354,7 @@ function renderPositionsTable(positions) {
       <td class="mono">${Number(p.estimated_mark_value_usdc).toFixed(4)}</td>
       <td class="mono ${unrealClass}">${unreal.toFixed(4)}</td>
       <td>${escapeHtml(p.status || '')}</td>
+      <td class="positions-action-cell">${exitCell}</td>
     </tr>`;
   }).join('');
 }
@@ -1253,7 +1363,7 @@ async function loadPositions() {
   const tbody = document.getElementById('positions-tbody');
   if (!connectedWallet) {
     cachedPositions = [];
-    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="positions-empty">Connect wallet to view positions</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="positions-empty">Connect wallet to view positions</td></tr>';
     return;
   }
   const positionsRes = await api(`/positions/${connectedWallet}`);
@@ -1302,6 +1412,7 @@ window.connectWallet = connectWallet;
 window.disconnectWallet = disconnectWallet;
 window.previewTrade = previewTrade;
 window.placeTrade = placeTrade;
+window.exitStakePosition = exitStakePosition;
 window.loadPositions = loadPositions;
 
 document.getElementById('btn-connect-wallet')?.addEventListener('click', () => connectWallet());

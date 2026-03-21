@@ -1,6 +1,6 @@
 import config from '../config/index.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
-import { getContractAbi, getBetPrecheck, simulateBet } from '../services/chainSync.js';
+import { getContractAbi, getBetPrecheck, simulateBet, simulateExitStake } from '../services/chainSync.js';
 import {
     listMarkets,
     createMarket,
@@ -77,7 +77,8 @@ export default async function predictionMarketRoutes(fastify) {
         try {
             const marketId = Number(request.params.marketId);
             const wallet = request.query?.wallet || '';
-            const precheck = await getBetPrecheck(marketId, wallet);
+            const outcomeIndex = request.query?.outcomeIndex;
+            const precheck = await getBetPrecheck(marketId, wallet, outcomeIndex);
             return { precheck };
         } catch (error) {
             return reply.code(400).send({ error: error.message });
@@ -103,6 +104,25 @@ export default async function predictionMarketRoutes(fastify) {
             }
             if (/allowance|ERC20/i.test(msg)) {
                 msg += ' — Approve USDC for the market contract first.';
+            }
+            return reply.code(400).send({ error: msg });
+        }
+    });
+
+    /** Dry-run `exitStake` — full stake return before betting closes. */
+    fastify.post('/markets/:marketId/simulate-exit', async (request, reply) => {
+        try {
+            const marketId = Number(request.params.marketId);
+            const { outcomeIndex, wallet } = request.body || {};
+            const result = await simulateExitStake(marketId, Number(outcomeIndex), String(wallet || ''));
+            return { ok: true, gas_limit: result.gas_limit || null };
+        } catch (error) {
+            let msg = String(error?.shortMessage || error?.reason || error?.message || error);
+            if (/TradingClosed|closed/i.test(msg)) {
+                msg += ' — Betting closed on-chain; use claim() after resolution if you won.';
+            }
+            if (/NothingToExit|stake/i.test(msg)) {
+                msg += ' — No net stake on this outcome for your wallet.';
             }
             return reply.code(400).send({ error: msg });
         }

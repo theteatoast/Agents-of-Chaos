@@ -1060,6 +1060,31 @@ body > * {
   color: var(--negative);
 }
 
+.positions-action-cell {
+  white-space: nowrap;
+}
+
+.positions-action-muted {
+  color: var(--text-muted);
+}
+
+.pm-exit-stake {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+  cursor: pointer;
+  font-family: var(--font);
+}
+
+.pm-exit-stake:hover {
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
 /* === Stats Row === */
 .stats-row {
   display: grid;

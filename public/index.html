@@ -252,7 +252,7 @@
       </div>
       <div class="betting-card betting-card-wide">
         <h3>Your positions</h3>
-        <p class="positions-hint">Parimutuel: <strong>net stake</strong> on your pick. After the market resolves on-chain, winners <strong>claim USDC</strong> from the contract — not a sell button here.</p>
+        <p class="positions-hint">Parimutuel: <strong>net stake</strong> on your pick. <strong>While betting is open</strong>, you can <strong>exit your full stake</strong> — USDC returns to your wallet (on-chain <code>exitStake</code>). After the market <strong>resolves</strong>, winners <strong>claim</strong> with <code>claim(marketId)</code>.</p>
         <div class="positions-table-wrap" id="positions-wrap">
           <table class="positions-table" id="positions-table" aria-label="Open positions">
             <thead>
@@ -264,10 +264,11 @@
                 <th>Est. value</th>
                 <th>Unrealized</th>
                 <th>Status</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody id="positions-tbody">
-              <tr><td colspan="7" class="positions-empty">Connect wallet to view positions</td></tr>
+              <tr><td colspan="8" class="positions-empty">Connect wallet to view positions</td></tr>
             </tbody>
           </table>
         </div>

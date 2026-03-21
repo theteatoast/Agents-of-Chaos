@@ -1,9 +1,9 @@
 import { ethers } from 'ethers';
 import pool from '../db/index.js';
 import config from '../config/index.js';
-import { fetchBetEventFromTx, readMarketStakeTotals } from './chainSync.js';
+import { fetchParimutuelEventFromTx, readMarketStakeTotals } from './chainSync.js';
 
-const SIDES = new Set(['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO', 'BET']);
+const SIDES = new Set(['BUY_YES', 'BUY_NO', 'SELL_YES', 'SELL_NO', 'BET', 'EXIT_STAKE']);
 
 export async function getDbNow() {
     const { rows } = await pool.query(`SELECT NOW() AS now`);
@@ -266,7 +266,7 @@ export async function executeTrade({ walletAddress, marketId, outcomeId, side, u
     }
 }
 
-/** Index a mined Base tx that emitted `BetPlaced` on ChaosParimutuelMarket. */
+/** Index a mined Base tx: `BetPlaced` (bet) or `StakeExited` (early exit before close). */
 export async function syncTradeFromTxHash(txHash) {
     const normalizedHash = txHash?.toLowerCase();
     if (!normalizedHash || !normalizedHash.startsWith('0x')) throw new Error('Invalid tx hash');
@@ -276,14 +276,9 @@ export async function syncTradeFromTxHash(txHash) {
         return { duplicate: true, tradeId: dup.rows[0].id };
     }
 
-    const ev = await fetchBetEventFromTx(normalizedHash);
+    const ev = await fetchParimutuelEventFromTx(normalizedHash);
     const wallet = String(ev.user).toLowerCase();
     const outcomeId = await getOutcomeIdByIndex(ev.marketId, ev.outcomeIndex);
-
-    const grossUsdc = Number(ethers.formatUnits(ev.grossUsdc, 6));
-    const feeUsdc = Number(ethers.formatUnits(ev.feeUsdc, 6));
-    const netUsdc = Number(ethers.formatUnits(ev.netUsdc, 6));
-    const avgPrice = netUsdc > 0 ? 1 : 0;
 
     const totals = await readMarketStakeTotals(ev.marketId);
 
@@ -301,33 +296,81 @@ export async function syncTradeFromTxHash(txHash) {
             ]);
         }
 
-        await client.query(
-            `INSERT INTO market_positions (wallet_address, market_id, outcome_id, shares, total_cost_usdc, updated_at)
-             VALUES ($1,$2,$3,$4,$5,NOW())
-             ON CONFLICT (wallet_address, market_id, outcome_id)
-             DO UPDATE SET
-               shares = market_positions.shares + $4,
-               total_cost_usdc = market_positions.total_cost_usdc + $6,
-               updated_at = NOW()`,
-            [wallet, ev.marketId, outcomeId, netUsdc, grossUsdc, grossUsdc]
-        );
+        if (ev.kind === 'bet') {
+            const grossUsdc = Number(ethers.formatUnits(ev.grossUsdc, 6));
+            const feeUsdc = Number(ethers.formatUnits(ev.feeUsdc, 6));
+            const netUsdc = Number(ethers.formatUnits(ev.netUsdc, 6));
+            const avgPrice = netUsdc > 0 ? 1 : 0;
 
-        const tradeInsert = await client.query(
-            `INSERT INTO market_trades
-            (wallet_address, market_id, outcome_id, side, usdc_amount, shares_delta, avg_price, fee_usdc, tx_hash, block_timestamp)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-            RETURNING *`,
-            [wallet, ev.marketId, outcomeId, 'BET', grossUsdc, netUsdc, avgPrice, feeUsdc, normalizedHash]
-        );
+            await client.query(
+                `INSERT INTO market_positions (wallet_address, market_id, outcome_id, shares, total_cost_usdc, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,NOW())
+                 ON CONFLICT (wallet_address, market_id, outcome_id)
+                 DO UPDATE SET
+                   shares = market_positions.shares + $4,
+                   total_cost_usdc = market_positions.total_cost_usdc + $6,
+                   updated_at = NOW()`,
+                [wallet, ev.marketId, outcomeId, netUsdc, grossUsdc, grossUsdc]
+            );
 
-        await client.query(`INSERT INTO protocol_fees (market_id, trade_id, fee_usdc) VALUES ($1, $2, $3)`, [
-            ev.marketId,
-            tradeInsert.rows[0].id,
-            feeUsdc,
-        ]);
+            const tradeInsert = await client.query(
+                `INSERT INTO market_trades
+                (wallet_address, market_id, outcome_id, side, usdc_amount, shares_delta, avg_price, fee_usdc, tx_hash, block_timestamp)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                RETURNING *`,
+                [wallet, ev.marketId, outcomeId, 'BET', grossUsdc, netUsdc, avgPrice, feeUsdc, normalizedHash]
+            );
 
-        await client.query('COMMIT');
-        return { duplicate: false, trade: tradeInsert.rows[0] };
+            await client.query(`INSERT INTO protocol_fees (market_id, trade_id, fee_usdc) VALUES ($1, $2, $3)`, [
+                ev.marketId,
+                tradeInsert.rows[0].id,
+                feeUsdc,
+            ]);
+
+            await client.query('COMMIT');
+            return { duplicate: false, trade: tradeInsert.rows[0], kind: 'bet' };
+        }
+
+        if (ev.kind === 'exit') {
+            const netEx = Number(ethers.formatUnits(ev.netUsdcReturned, 6));
+            if (!Number.isFinite(netEx) || netEx <= 0) throw new Error('Invalid exit amount');
+
+            const { rows: posRows } = await client.query(
+                `SELECT id, shares, total_cost_usdc FROM market_positions
+                 WHERE wallet_address = $1 AND market_id = $2 AND outcome_id = $3`,
+                [wallet, ev.marketId, outcomeId]
+            );
+            if (!posRows.length) throw new Error('No indexed position to apply exit to');
+            const sb = Number(posRows[0].shares);
+            const cb = Number(posRows[0].total_cost_usdc);
+            if (sb + 1e-8 < netEx) {
+                throw new Error('On-chain exit exceeds indexed position — re-sync or check outcome index');
+            }
+            const ns = sb - netEx;
+            const nc = sb > 0 ? (cb * ns) / sb : 0;
+
+            if (ns < 1e-8) {
+                await client.query('DELETE FROM market_positions WHERE id = $1', [posRows[0].id]);
+            } else {
+                await client.query(
+                    `UPDATE market_positions SET shares = $1, total_cost_usdc = $2, updated_at = NOW() WHERE id = $3`,
+                    [ns, nc, posRows[0].id]
+                );
+            }
+
+            const tradeInsert = await client.query(
+                `INSERT INTO market_trades
+                (wallet_address, market_id, outcome_id, side, usdc_amount, shares_delta, avg_price, fee_usdc, tx_hash, block_timestamp)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                RETURNING *`,
+                [wallet, ev.marketId, outcomeId, 'EXIT_STAKE', netEx, -netEx, 1, 0, normalizedHash]
+            );
+
+            await client.query('COMMIT');
+            return { duplicate: false, trade: tradeInsert.rows[0], kind: 'exit' };
+        }
+
+        throw new Error('Unknown parimutuel event kind');
     } catch (error) {
         await client.query('ROLLBACK');
         if (error && error.code === '23505') {
@@ -340,9 +383,12 @@ export async function syncTradeFromTxHash(txHash) {
 }
 
 export async function getPositions(walletAddress) {
+    const now = await getDbNow();
     const { rows } = await pool.query(
         `SELECT p.*, pm.title, pm.status, pm.winning_agent_id, mo.agent_id, a.name AS agent_name,
-                mo.reserve_yes, mo.reserve_no, pm.betting_closes_at
+                mo.reserve_yes, mo.reserve_no, pm.betting_closes_at,
+                (SELECT COUNT(*)::int FROM market_outcomes mo3
+                 WHERE mo3.market_id = p.market_id AND mo3.id < mo.id) AS outcome_index
          FROM market_positions p
          JOIN prediction_markets pm ON pm.id = p.market_id
          JOIN market_outcomes mo ON mo.id = p.outcome_id
@@ -356,12 +402,17 @@ export async function getPositions(walletAddress) {
         const cost = Number(row.total_cost_usdc);
         const poolOnOutcome = Number(row.reserve_yes) || 0;
         const impliedShare = poolOnOutcome > 0 ? netStake / poolOnOutcome : 0;
+        const marketLike = { status: row.status, betting_closes_at: row.betting_closes_at };
+        const tradingOpen = isTradingOpen(marketLike, now);
         return {
             ...row,
             net_stake_usdc: +netStake.toFixed(6),
             cost_basis_gross_usdc: +cost.toFixed(6),
             implied_share_of_outcome_pool: +impliedShare.toFixed(6),
-            note: 'Parimutuel: claim winnings on-chain via contract.claim(marketId) after resolution.',
+            trading_open: tradingOpen,
+            note: tradingOpen
+                ? 'While betting is open: exit your full net stake (USDC back to wallet). After the market resolves: winners use claim(marketId).'
+                : 'Parimutuel: after resolution, winners claim USDC on-chain via contract.claim(marketId).',
         };
     });
 }
@@ -452,6 +503,7 @@ export function getTransparencyPayload() {
             'Protocol fee is taken from each bet’s gross USDC and sent to the configured treasury on-chain.',
             'After the betting deadline, the richest agent in the sandbox wins; the contract owner resolves the matching outcome index on-chain.',
             'Winners claim USDC from the contract via claim(marketId); payout is pro-rata by net stake on the winning outcome.',
+            'Before betting closes, you can exit your full net stake with exitStake(marketId, outcomeIndex) — USDC returns to your wallet (no extra fee).',
             'This API only indexes confirmed on-chain bets — verify balances on BaseScan.',
             'Creating markets and simulation control may require admin credentials.',
         ],

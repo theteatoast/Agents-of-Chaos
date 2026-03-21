@@ -71,7 +71,10 @@ async function withRpcFallback(fn) {
     throw lastErr;
 }
 
-export async function fetchBetEventFromTx(txHash) {
+/**
+ * Parse a mined tx: either `BetPlaced` (bet) or `StakeExited` (early exit / "sell" before close).
+ */
+export async function fetchParimutuelEventFromTx(txHash) {
     loadArtifact();
     const iface = getIface();
     if (!config.predictionMarketContractAddress) {
@@ -91,21 +94,45 @@ export async function fetchBetEventFromTx(txHash) {
 
         const contractAddr = config.predictionMarketContractAddress.toLowerCase();
         const betTopic = iface.getEvent('BetPlaced').topicHash;
-        const log = receipt.logs.find(
+        const exitTopic = iface.getEvent('StakeExited').topicHash;
+        const exitLog = receipt.logs.find(
+            (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === exitTopic
+        );
+        const betLog = receipt.logs.find(
             (l) => l.address.toLowerCase() === contractAddr && l.topics[0] === betTopic
         );
-        if (!log) throw new Error('No BetPlaced event from the prediction market contract in this receipt');
 
-        const parsed = iface.parseLog({ topics: log.topics, data: log.data });
-        return {
-            user: parsed.args.user,
-            marketId: Number(parsed.args.marketId),
-            outcomeIndex: Number(parsed.args.outcomeIndex),
-            grossUsdc: parsed.args.grossUsdc,
-            feeUsdc: parsed.args.feeUsdc,
-            netUsdc: parsed.args.netUsdc,
-        };
+        if (exitLog) {
+            const parsed = iface.parseLog({ topics: exitLog.topics, data: exitLog.data });
+            return {
+                kind: 'exit',
+                user: parsed.args.user,
+                marketId: Number(parsed.args.marketId),
+                outcomeIndex: Number(parsed.args.outcomeIndex),
+                netUsdcReturned: parsed.args.netUsdcReturned,
+            };
+        }
+        if (betLog) {
+            const parsed = iface.parseLog({ topics: betLog.topics, data: betLog.data });
+            return {
+                kind: 'bet',
+                user: parsed.args.user,
+                marketId: Number(parsed.args.marketId),
+                outcomeIndex: Number(parsed.args.outcomeIndex),
+                grossUsdc: parsed.args.grossUsdc,
+                feeUsdc: parsed.args.feeUsdc,
+                netUsdc: parsed.args.netUsdc,
+            };
+        }
+        throw new Error('No BetPlaced or StakeExited event from the prediction market contract in this receipt');
     });
+}
+
+/** @deprecated Prefer fetchParimutuelEventFromTx — kept for callers that only index bets. */
+export async function fetchBetEventFromTx(txHash) {
+    const ev = await fetchParimutuelEventFromTx(txHash);
+    if (ev.kind !== 'bet') throw new Error('No BetPlaced event in this receipt (this tx may be exitStake)');
+    return ev;
 }
 
 /** @returns {Promise<number[]>} net stake per outcome index (USDC float) */
@@ -158,9 +185,10 @@ export async function readTotalPool(marketId) {
 
 /**
  * Server-side reads for bet UX — avoids browser wallet RPC issues (Rabby "missing revert data").
- * @returns {Promise<{ marketId: number, active: boolean, resolved: boolean, outcomeCount: number, closeTime: number, feeBps: number, poolTotalUsdc: number, allowanceRaw: bigint, balanceRaw: bigint }>}
+ * @param {string|number|undefined} outcomeIndexOpt — if set, includes `stake_net_usdc` for `stakeOf(market, outcome, wallet)`.
+ * @returns {Promise<object>}
  */
-export async function getBetPrecheck(marketId, walletAddress) {
+export async function getBetPrecheck(marketId, walletAddress, outcomeIndexOpt) {
     const contractAddr = config.predictionMarketContractAddress;
     if (!contractAddr) {
         throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
@@ -185,6 +213,14 @@ export async function getBetPrecheck(marketId, walletAddress) {
         const usdc = new ethers.Contract(config.usdcContractAddress, ERC20_MIN, provider);
         const allowanceRaw = await usdc.allowance(w, contractAddr);
         const balanceRaw = await usdc.balanceOf(w);
+        let stake_net_usdc = null;
+        if (outcomeIndexOpt !== undefined && outcomeIndexOpt !== null && outcomeIndexOpt !== '') {
+            const oid = Number(outcomeIndexOpt);
+            if (Number.isFinite(oid) && oid >= 0 && oid < Number(m.outcomeCount)) {
+                const stakeRaw = await market.stakeOf(mid, oid, w);
+                stake_net_usdc = ethers.formatUnits(stakeRaw, 6);
+            }
+        }
         return {
             marketId: mid,
             active: Boolean(m.active),
@@ -195,6 +231,7 @@ export async function getBetPrecheck(marketId, walletAddress) {
             pool_total_usdc: Number(ethers.formatUnits(poolWei, 6)),
             allowance_usdc: ethers.formatUnits(allowanceRaw, 6),
             balance_usdc: ethers.formatUnits(balanceRaw, 6),
+            stake_net_usdc,
         };
     });
 }
@@ -239,6 +276,45 @@ export async function simulateBet(marketId, outcomeIndex, grossSmallest, fromAdd
             gas_limit = gas.toString();
         } catch {
             /* staticCall already proved the bet can execute; gas estimate is optional */
+        }
+        return { ok: true, gas_limit };
+    });
+}
+
+/**
+ * Dry-run `exitStake` — full withdrawal of net stake before betting closes.
+ */
+export async function simulateExitStake(marketId, outcomeIndex, fromAddress) {
+    const contractAddr = config.predictionMarketContractAddress;
+    if (!contractAddr) {
+        throw new Error('PREDICTION_MARKET_CONTRACT_ADDRESS is not set');
+    }
+    const from = String(fromAddress || '').trim().toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(from)) {
+        throw new Error('Invalid wallet address');
+    }
+    const mid = Number(marketId);
+    const oid = Number(outcomeIndex);
+    if (!Number.isFinite(mid) || mid < 1) throw new Error('Invalid marketId');
+    if (!Number.isFinite(oid) || oid < 0) throw new Error('Invalid outcomeIndex');
+
+    const artifact = loadArtifact();
+    return withRpcFallback(async (rpcUrl) => {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== config.baseChainId) {
+            throw new Error(`RPC chain mismatch: expected ${config.baseChainId}, got ${net.chainId}`);
+        }
+        const market = new ethers.Contract(contractAddr, artifact.abi, provider);
+        await market.exitStake.staticCall(mid, oid, { from });
+
+        let gas_limit = null;
+        try {
+            const data = market.interface.encodeFunctionData('exitStake', [mid, oid]);
+            const gas = await provider.estimateGas({ to: contractAddr, from, data });
+            gas_limit = gas.toString();
+        } catch {
+            /* optional */
         }
         return { ok: true, gas_limit };
     });
